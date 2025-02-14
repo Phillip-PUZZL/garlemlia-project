@@ -1,8 +1,9 @@
 [package]
-name = "kademlia"
+name = "kademlia-simulator"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+kademlia = { path = "../kademlia" }
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.138"
