@@ -1,12 +1,16 @@
 use std::cmp::PartialEq;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::fs::File;
+use std::io::{Read, Write};
 use std::net::{SocketAddr};
+use std::ops::Deref;
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
+use lazy_static::lazy_static;
 use rand::Rng;
 use serde::{Serialize, Deserialize};
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, Mutex, MutexGuard};
+use tokio::sync::{mpsc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task;
 use tokio::time::{timeout, Duration};
@@ -103,7 +107,7 @@ impl KBucket {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct RoutingTable {
+pub struct RoutingTable {
     local_node: Node,
     buckets: Vec<KBucket>,
 }
@@ -126,6 +130,18 @@ impl RoutingTable {
         let xor_distance = self.local_node.id ^ node_id;
 
         128 - xor_distance.leading_zeros() as usize
+    }
+    
+    fn flat(&self) -> Vec<Node> {
+        self.buckets
+            .iter()
+            .flat_map(|bucket| bucket.nodes.iter().cloned())
+            .collect()
+    }
+    
+    fn insert_direct(&mut self, node: Node) {
+        let index = self.bucket_index(node.id);
+        self.buckets[index].insert(node);
     }
 
     fn check_buckets(&mut self, node: Node, index: usize) -> bool {
@@ -319,8 +335,35 @@ impl KademliaMessage {
 
     // Send a message to another node
     pub async fn send(&self, socket: &UdpSocket, target: &SocketAddr) {
+        // **SIMULATOR CODE**
+        let mut target_real = target.clone();
+        {
+            let sim = SIM.lock().await;
+            let mut sim_running = false;
+
+            {
+                if !sim.sims.lock().await.is_empty() {
+                    sim_running = true;
+                }
+            }
+
+            if sim_running {
+                let node_running;
+                {
+                    node_running = sim.node_running_from_sim(*target).await;
+                }
+                if node_running {
+                    target_real = sim.get_socket_address(*target).await.expect("REASON");
+                } else {
+                    sim.add_node(*target).await.expect("REASON");
+                }
+                sim.lock_node_from_sim(*target).await;
+            }
+        }
+        // **END SIMULATOR CODE**
+
         let message_bytes = serde_json::to_vec(self).unwrap();
-        socket.send_to(&message_bytes, target).await.unwrap();
+        socket.send_to(&message_bytes, target_real).await.unwrap();
     }
 
     async fn recv(response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
@@ -400,6 +443,7 @@ impl KademliaMessage {
 pub struct Kademlia {
     pub node: Arc<Mutex<Node>>,
     pub socket: Arc<UdpSocket>,
+    pub receive_addr: SocketAddr,
     routing_table: Arc<Mutex<RoutingTable>>,
     pub data_store: Arc<Mutex<HashMap<u128, String>>>,
     pub response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
@@ -409,13 +453,14 @@ pub struct Kademlia {
 }
 
 impl Kademlia {
-    pub async fn new(id: u128, address: &str, port: u32) -> Self {
+    pub async fn new(id: u128, address: &str, port: u16) -> Self {
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
         let rt = RoutingTable::new(node.clone());
 
         Self {
             node: Arc::new(Mutex::new(node)),
             socket: Arc::new(UdpSocket::bind(format!("{}:{}", address, port)).await.unwrap()),
+            receive_addr: format!("{address}:{port}").parse().unwrap(),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
             response_queue: Arc::new(Mutex::new(HashMap::new())),
@@ -473,6 +518,29 @@ impl Kademlia {
             let mut buf = [0; 1024];
             while !stop_clone.load(Ordering::Relaxed) {
                 if let Ok((size, src)) = socket.recv_from(&mut buf).await {
+                    // **SIMULATOR CODE**
+                    {
+                        let sim = SIM.lock().await;
+                        let mut sim_running = false;
+
+                        {
+                            if !sim.sims.lock().await.is_empty() {
+                                sim_running = true;
+                            }
+                        }
+
+                        if sim_running {
+                            let node_running;
+                            {
+                                node_running = sim.node_running_from_real(src).await;
+                            }
+                            if node_running {
+                                sim.unlock_node_from_real(src).await;
+                            }
+                        }
+                    }
+                    // **END SIMULATOR CODE**
+
                     let self_ref;
                     {
                         self_ref = self_node.lock().await;
@@ -878,22 +946,71 @@ impl Kademlia {
     }
 }
 
-static SIM: Mutex<Option<Simulator>> = Mutex::const_new(None);
+lazy_static! {
+    static ref SIM: Arc<Mutex<Simulator>> = Arc::new(Mutex::new(Simulator::new_empty()));
+}
 
-#[derive(Clone)]
-pub struct SimulatedNode {
-    pub node: Node,
-    routing_table: RoutingTable,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileNode {
+    pub id: u128,
+    pub address: String,
+    pub routing_table: Vec<Node>,
     pub data_store: HashMap<u128, String>,
     pub response_queue: HashMap<u128, Vec<KademliaMessage>>,
+    pub locked: bool,
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulatedNode {
+    pub node: Node,
+    pub routing_table: RoutingTable,
+    pub data_store: HashMap<u128, String>,
+    pub response_queue: HashMap<u128, Vec<KademliaMessage>>,
+    pub locked: bool,
+}
+
+impl SimulatedNode {
+    pub fn new(node: Node, rt: RoutingTable, ds: HashMap<u128, String>, rq: HashMap<u128, Vec<KademliaMessage>>) -> SimulatedNode {
+        SimulatedNode {
+            node,
+            routing_table: rt,
+            data_store: ds,
+            response_queue: rq,
+            locked: false,
+        }
+    }
+
+    fn set_routing_table(&mut self, rt: &mut RoutingTable) {
+        self.routing_table.set(rt);
+    }
+
+    fn set_data_store(&mut self, data_store: &mut HashMap<u128, String>) {
+        self.data_store.clear();
+
+        for i in data_store.iter() {
+            self.data_store.insert(*i.0, i.1.clone());
+        }
+    }
+
+    fn set_response_queue(&mut self, response_queue: &mut HashMap<u128, Vec<KademliaMessage>>) {
+        self.response_queue.clear();
+
+        for i in response_queue.iter() {
+            self.response_queue.insert(*i.0, i.1.clone());
+        }
+    }
 }
 
 // Simulator Struct
+#[derive(Clone)]
 pub struct Simulator {
     pub available: Arc<Mutex<Vec<Kademlia>>>,
     pub unavailable: Arc<Mutex<HashMap<SocketAddr, Kademlia>>>,
-    pub sims: Arc<Mutex<Vec<SimulatedNode>>>,
-    pub map: Arc<Mutex<HashMap<u16, u16>>>,
+    pub availability_queue: Arc<Mutex<VecDeque<SocketAddr>>>,
+    pub sims: Arc<Mutex<HashMap<SocketAddr, SimulatedNode>>>,
+    pub sim_to_real_map: Arc<Mutex<HashMap<SocketAddr, SocketAddr>>>,
+    pub real_to_sim_map: Arc<Mutex<HashMap<SocketAddr, SocketAddr>>>,
     /*pub node: Node,
     pub socket: Arc<UdpSocket>,
     routing_table: Arc<Mutex<RoutingTable>>,
@@ -906,79 +1023,177 @@ pub struct Simulator {
 
 impl Simulator {
 
+    // Generate the nodes which the simulator will use
     async fn create_sim_node(id: u128, port: u16) -> Kademlia {
-        let mut node = Kademlia::new(id, "127.0.0.1", port as u32).await;
+        let mut node = Kademlia::new(id, "127.0.0.1", port).await;
 
         // Spawn a task to keep the node running and listening
         node.start(Arc::clone(&node.socket)).await;
 
         node
     }
+
+    // Setup the simulator
     pub async fn new(start_port: u16, available_total: u8, current_simulators: Vec<SimulatedNode>) -> Simulator {
         let mut created_sims = vec![];
+        let mut sims_hash = HashMap::new();
 
         for i in 0..available_total {
             created_sims.push(Simulator::create_sim_node(0, start_port + i as u16).await);
         }
 
+        for i in 0..current_simulators.len() {
+            sims_hash.insert(current_simulators[i].node.address, current_simulators[i].clone());
+        }
+
         Simulator {
             available: Arc::new(Mutex::new(created_sims)),
             unavailable: Arc::new(Mutex::new(HashMap::new())),
-            sims: Arc::new(Mutex::new(current_simulators)),
-            map: Arc::new(Mutex::new(HashMap::new())),
+            availability_queue: Arc::new(Mutex::new(VecDeque::new())),
+            sims: Arc::new(Mutex::new(sims_hash)),
+            sim_to_real_map: Arc::new(Mutex::new(HashMap::new())),
+            real_to_sim_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    pub fn new_empty() -> Simulator {
+        Simulator {
+            available: Arc::new(Mutex::new(vec![])),
+            unavailable: Arc::new(Mutex::new(HashMap::new())),
+            availability_queue: Arc::new(Mutex::new(VecDeque::new())),
+            sims: Arc::new(Mutex::new(HashMap::new())),
+            sim_to_real_map: Arc::new(Mutex::new(HashMap::new())),
+            real_to_sim_map: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    // Save the state of a Kademlia node to the simulator storage
     pub async fn save_state(&self, kademlia: &Kademlia) {
-        let id = kademlia.get_node().await.id;
-
-        for sim in self.sims.lock().await.iter_mut() {
-            if sim.node.id == id {
-                sim.data_store = kademlia.data_store.lock().await.clone();
-                sim.routing_table = kademlia.routing_table.lock().await.clone();
-                break;
+        let mut sims = self.sims.lock().await;
+        let sim = sims.get_mut(&kademlia.node.lock().await.address);
+        match sim {
+            Some(sim) => {
+                sim.set_data_store(&mut kademlia.data_store.lock().await.clone());
+                sim.set_routing_table(&mut kademlia.routing_table.lock().await.clone());
+                sim.set_response_queue(&mut kademlia.response_queue.lock().await.clone());
             }
+            _ => {}
         }
     }
 
-    pub async fn add_node(&self, address: SocketAddr) {
-        let started;
+    pub async fn lock_node_from_sim(&self, address: SocketAddr) {
+        let mut sims = self.sims.lock().await;
+        let sim = sims.get_mut(&address);
+
         {
-            started = self.unavailable.lock().await.contains_key(&address);
+            self.update_lru(address).await;
         }
 
-        if !started {
-            let mut sim_data = None;
+        match sim {
+            Some(sim) => {
+                sim.locked = true;
+            }
+            _ => {}
+        }
+    }
+
+    pub async fn lock_node_from_real(&self, address: SocketAddr) {
+        let mut sims = self.sims.lock().await;
+        let mut sim = None;
+        if let Some(sim_addr) = self.real_to_sim_map.lock().await.get(&address) {
             {
-                for sim in self.sims.lock().await.iter_mut() {
-                    if sim.node.address == address {
-                        sim_data = Some(sim.clone());
-                        break;
-                    }
-                }
+                self.update_lru(*sim_addr).await;
             }
 
-            match sim_data {
-                Some(mut val) => {
-                    let mut kad;
-                    {
-                        kad = self.available.lock().await.pop().unwrap();
-                    }
+            sim = sims.get_mut(sim_addr);
+        }
 
-                    kad.set_node(&mut val.node).await;
-                    kad.set_routing_table(&mut val.routing_table.clone()).await;
-                    kad.set_data_store(&mut val.data_store).await;
-                    kad.set_response_queue(&mut val.response_queue).await;
+        match sim {
+            Some(sim) => {
+                sim.locked = true;
+            }
+            _ => {}
+        }
+    }
 
-                    {
-                        self.unavailable.lock().await.insert(address, kad);
-                    }
-                }
-                None => {}
+    pub async fn unlock_node_from_sim(&self, address: SocketAddr) {
+        let mut sims = self.sims.lock().await;
+        let sim = sims.get_mut(&address);
+
+        match sim {
+            Some(sim) => {
+                sim.locked = false;
+            }
+            _ => {}
+        }
+    }
+
+    pub async fn unlock_node_from_real(&self, address: SocketAddr) {
+        let mut sims = self.sims.lock().await;
+        let mut sim = None;
+        if let Some(sim_port) = self.real_to_sim_map.lock().await.get(&address) {
+            sim = sims.get_mut(sim_port);
+        }
+
+        match sim {
+            Some(sim) => {
+                sim.locked = false;
+            }
+            _ => {}
+        }
+    }
+
+    pub async fn is_locked(&self, address: SocketAddr) -> bool {
+        let mut sims = self.sims.lock().await;
+        let sim = sims.get_mut(&address);
+        match sim {
+            Some(sim) => {
+                sim.locked
+            }
+            _ => {
+                false
             }
         }
     }
 
+    pub async fn node_running_from_sim(&self, address: SocketAddr) -> bool {
+        if self.unavailable.lock().await.contains_key(&address) {
+            return true;
+        }
+
+        false
+    }
+
+    pub async fn node_running_from_real(&self, address: SocketAddr) -> bool {
+        let sim_addr;
+        if let Some(sim_address) = self.real_to_sim_map.lock().await.get(&address) {
+            sim_addr = sim_address.clone();
+        } else {
+            return false;
+        }
+
+        if self.unavailable.lock().await.contains_key(&sim_addr) {
+            return true;
+        }
+
+        false
+    }
+
+    pub async fn get_socket_address(&self, address: SocketAddr) -> Option<SocketAddr> {
+        self.sim_to_real_map.lock().await.get(&address).cloned()
+    }
+
+    pub async fn update_lru(&self, address: SocketAddr) {
+        let mut aq = self.availability_queue.lock().await;
+
+        if aq.contains(&address) {
+            aq.retain(|n| n != &address);
+            aq.push_back(address);
+        }
+    }
+
+    // Remove a node from the unavailable list then saves its state and makes
+    // it available
     pub async fn remove_node(&self, address: SocketAddr) {
         let mut kad = None;
         {
@@ -993,23 +1208,208 @@ impl Simulator {
         match kad {
             Some(val) => {
                 self.save_state(&val).await;
-                self.available.lock().await.push(val);
+                let temp_node = &mut Node { id: 0, address: "127.0.0.1:7999".parse().unwrap() };
+                val.set_node(temp_node).await;
+                val.set_routing_table(&mut RoutingTable::new(temp_node.clone())).await;
+                val.set_data_store(&mut HashMap::new()).await;
+                val.set_response_queue(&mut HashMap::new()).await;
+
+                {
+                    self.available.lock().await.push(val);
+                    let mut strm = self.sim_to_real_map.lock().await;
+                    if let Some(real) = strm.remove(&address) {
+                        self.real_to_sim_map.lock().await.remove(&real);
+                    }
+                    let mut aq = self.availability_queue.lock().await;
+
+                    if aq.contains(&address) {
+                        aq.retain(|n| n != &address);
+                    }
+                }
             }
             None => {}
         }
     }
 
-    pub async fn stop(&self) {
-        for kad in self.available.lock().await.iter() {
-            self.save_state(kad).await;
-            kad.stop().await;
+    async fn make_available(&self) {
+        let old;
+        {
+            let mut aq = self.availability_queue.lock().await;
+            old = aq.pop_front();
         }
 
-        for kad in self.unavailable.lock().await.iter() {
-            self.save_state(kad.1).await;
-            kad.1.stop().await;
+        match old {
+            Some(val) => {
+                let mut exit = false;
+                while !exit {
+                    {
+                        if let Some(sim) = self.sims.lock().await.get(&val) {
+                            if !sim.locked {
+                                exit = true;
+                            }
+                        }
+                    }
+                }
+                self.remove_node(val).await;
+            }
+            None => {}
         }
     }
+
+    // Run a simulated node; gets an available slot from the available list and
+    // sets its data accordingly then maps the port
+    pub async fn add_node(&self, address: SocketAddr) -> Option<SocketAddr> {
+        let started;
+        {
+            started = self.unavailable.lock().await.contains_key(&address);
+        }
+
+        if !started {
+            let has_available;
+            {
+                has_available = self.available.lock().await.len() > 0;
+            }
+
+            if !has_available {
+                self.make_available().await;
+            }
+
+            let mut sim_data = None;
+            {
+                let sims = self.sims.lock().await;
+                let sim = sims.get(&address);
+                match sim {
+                    Some(sim) => {
+                        sim_data = Some(sim.clone());
+                    }
+                    _ => {}
+                }
+            }
+
+            return match sim_data {
+                Some(mut val) => {
+                    let kad;
+                    {
+                        kad = self.available.lock().await.pop().unwrap();
+                    }
+
+                    kad.set_node(&mut val.node).await;
+                    kad.set_routing_table(&mut val.routing_table.clone()).await;
+                    kad.set_data_store(&mut val.data_store).await;
+                    kad.set_response_queue(&mut val.response_queue).await;
+
+                    let kad_socket = kad.receive_addr;
+
+                    {
+                        self.unavailable.lock().await.insert(address, kad);
+                        self.sim_to_real_map.lock().await.insert(address, kad_socket);
+                        self.real_to_sim_map.lock().await.insert(kad_socket, address);
+                        self.availability_queue.lock().await.push_back(address);
+                    }
+
+                    Some(kad_socket)
+                }
+                None => {
+                    None
+                }
+            }
+        }
+        None
+    }
+
+    pub async fn create_node(&self, new_node: SimulatedNode) {
+        self.sims.lock().await.insert(new_node.node.address, new_node);
+    }
+
+    pub async fn get_node(&self, address: SocketAddr) -> Option<SimulatedNode> {
+        {
+            if let Some(kad) = self.unavailable.lock().await.get(&address) {
+                self.save_state(kad).await;
+            }
+        }
+        self.sims.lock().await.get(&address).cloned()
+    }
+
+    pub async fn get_all_nodes(&self) -> Vec<SimulatedNode> {
+        let mut finished = vec![];
+        let sims;
+        {
+            sims = self.sims.lock().await.clone();
+        }
+
+        for i in sims {
+            if let Some(node) = self.get_node(i.0).await {
+                finished.push(node);
+            }
+        }
+
+        finished
+    }
+
+    // Stops all running nodes and saves their states
+    pub async fn stop(&self) {
+        {
+            let available = self.available.lock().await;
+            for kad in available.iter() {
+                kad.stop().await;
+            }
+        }
+
+        {
+            let unavailable = self.unavailable.lock().await;
+            for kad in unavailable.iter() {
+                self.save_state(kad.1).await;
+                kad.1.stop().await;
+            }
+        }
+    }
+}
+
+fn file_node_to_simulated(file_node: FileNode) -> SimulatedNode {
+    let mut rt = RoutingTable::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() });
+    
+    for node in file_node.routing_table {
+        rt.insert_direct(node);
+    }
+    
+    SimulatedNode::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() }, rt, file_node.data_store, file_node.response_queue)
+}
+
+fn simulated_node_to_file(sim_node: SimulatedNode) -> FileNode {
+    FileNode {
+        id: sim_node.node.id,
+        address: sim_node.node.address.to_string(),
+        routing_table: sim_node.routing_table.flat(),
+        data_store: sim_node.data_store,
+        response_queue: sim_node.response_queue,
+        locked: sim_node.locked,
+    }
+}
+
+/// Loads SimulatedNodes from a JSON file
+pub fn load_simulated_nodes(file_path: &str) -> Result<Vec<SimulatedNode>, Box<dyn std::error::Error>> {
+    let mut file = File::open(file_path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    let file_nodes: Vec<FileNode> = serde_json::from_str(&contents)?;
+    let mut simulated_nodes = vec![];
+    for node in file_nodes {
+        simulated_nodes.push(file_node_to_simulated(node));
+    }
+    Ok(simulated_nodes)
+}
+
+/// Saves SimulatedNodes to a JSON file
+pub fn save_simulated_nodes(file_path: &str, nodes: &Vec<SimulatedNode>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file_nodes = vec![];
+    for node in nodes {
+        file_nodes.push(simulated_node_to_file(node.clone()));
+    }
+    
+    let json_string = serde_json::to_string_pretty(&file_nodes)?;
+    let mut file = File::create(file_path)?;
+    file.write_all(json_string.as_bytes())?;
+    Ok(())
 }
 
 /// TESTS
@@ -1022,7 +1422,7 @@ mod kad_tests {
     use tokio::time::sleep;
 
     async fn create_test_node(id: u128, port: u16) -> Kademlia {
-        let mut node = Kademlia::new(id, "127.0.0.1", port as u32).await;
+        let mut node = Kademlia::new(id, "127.0.0.1", port).await;
 
         // Spawn a task to keep the node running and listening
         node.start(Arc::clone(&node.socket)).await;
@@ -1165,7 +1565,6 @@ mod kad_tests {
         let node4 = create_test_node(4, 8004).await;
 
         let node3_info = node3.node.lock().await.clone();
-        let node2_info = node2.node.lock().await.clone();
         let node1_info = node1.node.lock().await.clone();
 
         // Let nodes join the network

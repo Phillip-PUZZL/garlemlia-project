@@ -1,31 +1,47 @@
 [
   {
     "id": 12345,
-    "address": "127.0.0.1",
-    "port": 2740,
-    "values": { "55555": "Hello, DHT!" },
+    "address": "127.0.0.1:6000",
+    "data_store": { "55555": "Hello, DHT!" },
     "routing_table": [
-      [
-        { "id": 67890, "address": "127.0.0.1:10001" }
-      ],
-      [
-        { "id": 54321, "address": "127.0.0.1:10002" },
-        { "id": 98765, "address": "127.0.0.1:10003" }
-      ]
-    ]
+        { "id": 67890, "address": "127.0.0.1:6001" },
+        { "id": 54321, "address": "127.0.0.1:6002" },
+        { "id": 98765, "address": "127.0.0.1:6003" }
+    ],
+    "response_queue": { "67890":  [] },
+    "locked": false
   },
   {
     "id": 67890,
-    "address": "127.0.0.1",
-    "port": 2741,
-    "values": {},
+    "address": "127.0.0.1:6001",
+    "data_store": {},
     "routing_table": [
-      [
-        { "id": 12345, "address": "127.0.0.1:10000" }
-      ],
-      [
-        { "id": 54321, "address": "127.0.0.1:10002" }
-      ]
-    ]
+        { "id": 12345, "address": "127.0.0.1:6000" },
+        { "id": 54321, "address": "127.0.0.1:6002" }
+    ],
+    "response_queue": { "12345":  [] },
+    "locked": false
+  },
+  {
+    "id": 54321,
+    "address": "127.0.0.1:6002",
+    "data_store": {},
+    "routing_table": [
+      { "id": 12345, "address": "127.0.0.1:6000" },
+      { "id": 98765, "address": "127.0.0.1:6003" }
+    ],
+    "response_queue": { "12345":  [] },
+    "locked": false
+  },
+  {
+    "id": 98765,
+    "address": "127.0.0.1:6003",
+    "data_store": {},
+    "routing_table": [
+      { "id": 12345, "address": "127.0.0.1:6000" },
+      { "id": 54321, "address": "127.0.0.1:6002" }
+    ],
+    "response_queue": { "12345":  [] },
+    "locked": false
   }
 ]
