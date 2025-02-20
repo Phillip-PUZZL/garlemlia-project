@@ -113,12 +113,7 @@ impl RoutingTable {
     fn bucket_index(&self, node_id: u128) -> usize {
         let xor_distance = self.local_node.id ^ node_id;
 
-        // **If distance is zero, return bucket 0**
-        if xor_distance == 0 {
-            return 0;
-        }
-
-        127 - xor_distance.leading_zeros() as usize
+        128 - xor_distance.leading_zeros() as usize
     }
 
     fn check_buckets(&mut self, node: Node, index: usize) -> bool {
@@ -794,9 +789,10 @@ impl Kademlia {
         }
     }
 
-    pub async fn join_network(&self, socket: &UdpSocket, target: &SocketAddr) {
+    pub async fn join_network(&self, socket: Arc<UdpSocket>, target: &SocketAddr) {
         if let Some(rx) = &self.rx {
             let rx = Arc::clone(rx);
+            let socket_clone = Arc::clone(&socket);
             let response_queue = Arc::clone(&self.response_queue);
             let message = KademliaMessage::FindNode {
                 id: self.node.id,
@@ -822,6 +818,8 @@ impl Kademlia {
                 },
                 _ => {}
             }
+
+            self.iterative_find_node(socket_clone, self.node.id).await;
         }
     }
 }
@@ -848,8 +846,8 @@ mod tests {
         let node2 = create_test_node(2, 8006).await;
         let node3 = create_test_node(3, 8007).await;
 
-        node1.join_network(&node1.socket, &node3.node.address).await;
-        node2.join_network(&node2.socket, &node3.node.address).await;
+        node1.join_network(Arc::clone(&node1.socket), &node3.node.address).await;
+        node2.join_network(Arc::clone(&node2.socket), &node3.node.address).await;
 
         // Perform lookup
         let found_nodes = node1.iterative_find_node(Arc::clone(&node1.socket), 2).await;
@@ -905,7 +903,7 @@ mod tests {
             let id = base_id + i as u128;
             nodes.push(Node {
                 id,
-                address: format!("127.0.0.1:{}", 8000 + i).parse().unwrap(),
+                address: format!("127.0.0.1:{}", 8000 + base_id + i as u128).parse().unwrap(),
             });
         }
 
@@ -971,9 +969,9 @@ mod tests {
         let node4 = create_test_node(4, 8004).await;
 
         // Let nodes join the network
-        node4.join_network(&node4.socket, &node1.node.address).await;
-        node1.join_network(&node1.socket, &node3.node.address).await;
-        node2.join_network(&node2.socket, &node1.node.address).await;
+        node4.join_network(Arc::clone(&node4.socket), &node1.node.address).await;
+        node1.join_network(Arc::clone(&node1.socket), &node3.node.address).await;
+        node2.join_network(Arc::clone(&node2.socket), &node1.node.address).await;
 
         sleep(Duration::from_secs(1)).await;
 
