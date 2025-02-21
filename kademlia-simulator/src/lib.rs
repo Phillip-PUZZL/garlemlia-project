@@ -15,430 +15,6 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task;
 use tokio::time::{timeout, Duration};
 
-/// Helper struct to use a max-heap for closest node selection
-#[derive(Eq)]
-struct HeapNode {
-    distance: u128,
-    node: Node,
-}
-
-impl Ord for HeapNode {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.distance.cmp(&self.distance) // Reverse order for min-heap behavior
-    }
-}
-
-impl PartialOrd for HeapNode {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for HeapNode {
-    fn eq(&self, other: &Self) -> bool {
-        self.distance == other.distance
-    }
-}
-
-// Default bucket size
-const DEFAULT_K: usize = 20;
-// Maximum bucket size for high-traffic buckets
-const MAX_K: usize = 40;
-
-// Node Struct
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Node {
-    pub id: u128,
-    pub address: SocketAddr,
-}
-
-impl Node {
-    fn set(&mut self, new: &mut Node) {
-        self.id = new.id;
-        self.address = new.address;
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[derive(Default)]
-#[derive(PartialEq)]
-struct KBucket {
-    nodes: VecDeque<Node>,
-    max_size: usize,
-}
-
-impl KBucket {
-    fn new() -> Self {
-        Self {
-            nodes: VecDeque::with_capacity(DEFAULT_K),
-            max_size: DEFAULT_K,
-        }
-    }
-
-    fn insert(&mut self, node: Node) {
-        self.nodes.push_back(node);
-    }
-
-    fn remove(&mut self, node: Node) {
-        if let Some(pos) = self.nodes.iter().position(|n| n.id == node.id) {
-            self.nodes.remove(pos).unwrap();
-        }
-    }
-
-    fn update_node(&mut self, node: Node) {
-        self.remove(node.clone());
-        self.insert(node);
-    }
-
-    fn contains(&self, node_id: u128) -> bool {
-        self.nodes.iter().any(|n| n.id == node_id)
-    }
-
-    fn is_full(&self) -> bool {
-        self.nodes.len() >= self.max_size
-    }
-
-    fn increase_capacity(&mut self) {
-        if self.max_size < MAX_K {
-            // Incrementally increase size
-            self.max_size += 5;
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct RoutingTable {
-    local_node: Node,
-    buckets: Vec<KBucket>,
-}
-
-impl RoutingTable {
-    fn new(local_node: Node) -> Self {
-        let num_buckets = 128;
-        Self {
-            local_node,
-            buckets: vec![KBucket::new(); num_buckets],
-        }
-    }
-
-    fn set(&mut self, new: &mut RoutingTable) {
-        self.local_node = new.local_node.clone();
-        self.buckets = new.buckets.clone();
-    }
-
-    fn bucket_index(&self, node_id: u128) -> usize {
-        let xor_distance = self.local_node.id ^ node_id;
-
-        128 - xor_distance.leading_zeros() as usize
-    }
-    
-    fn flat(&self) -> Vec<Node> {
-        self.buckets
-            .iter()
-            .flat_map(|bucket| bucket.nodes.iter().cloned())
-            .collect()
-    }
-    
-    fn insert_direct(&mut self, node: Node) {
-        let index = self.bucket_index(node.id);
-        self.buckets[index].insert(node);
-    }
-
-    fn check_buckets(&mut self, node: Node, index: usize) -> bool {
-        // If node already exists, move it to the back (most recently seen)
-        if self.buckets[index].contains(node.id) {
-            self.buckets[index].update_node(node);
-            return true;
-        }
-
-        // If bucket is not full, simply add the node
-        if !self.buckets[index].is_full() {
-            self.buckets[index].insert(node);
-            return true;
-        }
-
-        false
-    }
-
-    // Add a node to the routing table from Kademlia Responder
-    async fn add_node_from_responder(&mut self, node: Node, socket: &UdpSocket) {
-        let index = self.bucket_index(node.id);
-
-        if self.check_buckets(node.clone(), index) {
-            return;
-        }
-
-        // Query the LRU node before evicting it
-        if let Some(lru_node) = self.buckets[index].nodes.clone().front() {
-            let lru_address = lru_node.address;
-
-            // Send a ping message to check if LRU node is alive
-            let ping_message = KademliaMessage::FindNode {
-                id: lru_node.id,
-                sender_id: self.local_node.id,
-            };
-
-            ping_message.send(socket, &lru_address).await;
-
-            // Buffer to store the response
-            let mut buf = [0; 1024];
-
-            // Wait up to 300ms for a response asynchronously
-            let response = timeout(Duration::from_millis(300), async {
-                // Try to receive a response
-                match socket.recv_from(&mut buf).await {
-                    Ok((_size, src)) => {
-                        if src == lru_address {
-                            // The LRU node responded, so keep it in the bucket and push to the front
-                            self.buckets[index].update_node(lru_node.clone());
-                            return true;
-                        } else {
-                            false
-                        }
-                    }
-                    _ => {
-                        false
-                    }
-                }
-            }).await.unwrap_or(false);
-
-            if !response {
-                // No response, replace it with the new node
-                // No valid response from the LRU node → Remove it
-                self.buckets[index].remove(lru_node.clone());
-                // Add the new node after LRU eviction
-                self.buckets[index].insert(node);
-            }
-        }
-    }
-
-    // Add a node to the routing table
-    async fn add_node(&mut self,
-                      response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
-                      rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>,
-                      node: Node, socket: &UdpSocket) {
-        let index = self.bucket_index(node.id);
-        if self.check_buckets(node.clone(), index) {
-            return;
-        }
-
-        // Query the LRU node before evicting it
-        if let Some(lru_node) = self.buckets[index].nodes.clone().front() {
-            let lru_address = lru_node.address;
-
-            // Send a ping message to check if LRU node is alive
-            let ping_message = KademliaMessage::FindNode {
-                id: lru_node.id,
-                sender_id: self.local_node.id,
-            };
-
-            ping_message.send(socket, &lru_address).await;
-
-            // Wait up to 300ms for a response asynchronously
-            let response = KademliaMessage::recv(response_queue, rx, 300).await;
-
-            match response {
-                Some(msg) => {
-                    match msg {
-                        KademliaMessage::Response { sender_id, .. } => {
-                            if sender_id == lru_node.id {
-                                self.buckets[index].update_node(lru_node.clone());
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                None => {
-                    // No response, replace it with the new node
-                    // No valid response from the LRU node → Remove it
-                    self.buckets[index].remove(lru_node.clone());
-                    // Add the new node after LRU eviction
-                    self.buckets[index].insert(node);
-                }
-            }
-        }
-    }
-
-    // Find the closest nodes based on XOR distance
-    fn find_closest_nodes(&self, target_id: u128, count: usize) -> Vec<Node> {
-        let mut heap = BinaryHeap::new();
-        heap.push(HeapNode { distance: target_id ^ self.local_node.id, node: self.local_node.clone() });
-        let mut searched_buckets = 0;
-
-        let start_index = self.bucket_index(target_id);
-
-        // Search from the closest bucket outward
-        for offset in 0..self.buckets.len() {
-            let index = if offset % 2 == 0 {
-                // Search left
-                start_index.saturating_sub(offset / 2)
-            } else {
-                // Search right
-                start_index + (offset / 2)
-            };
-
-            if index >= self.buckets.len() {
-                continue;
-            }
-
-            for node in &self.buckets[index].nodes {
-                let distance = target_id ^ node.id;
-                heap.push(HeapNode { distance, node: node.clone() });
-
-                // Keep only the closest 'count' nodes
-                if heap.len() > count {
-                    heap.pop();
-                }
-            }
-
-            searched_buckets += 1;
-
-            // Stop early if we have enough nodes
-            if heap.len() >= count && searched_buckets > 3 {
-                break;
-            }
-        }
-
-        // Extract and return the closest nodes
-        heap.into_sorted_vec()
-            .into_iter()
-            .map(|heap_node| heap_node.node)
-            .collect()
-    }
-}
-
-#[derive(Debug)]
-struct MessageChannel {
-    node_id: u128,
-    msg_id: u128,
-}
-
-// Kademlia Messages
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum KademliaMessage {
-    FindNode { id: u128, sender_id: u128 },
-    Store { key: u128, value: String, sender_id: u128 },
-    FindValue { key: u128, sender_id: u128 },
-    Response { msg_id: Option<u128>, nodes: Vec<Node>, value: Option<String>, sender_id: u128 },
-}
-
-impl KademliaMessage {
-    // Extract sender ID from the message
-    pub fn get_sender_id(&self) -> u128 {
-        match self {
-            KademliaMessage::FindNode { sender_id, .. } => *sender_id,
-            KademliaMessage::Store { sender_id, .. } => *sender_id,
-            KademliaMessage::FindValue { sender_id, .. } => *sender_id,
-            KademliaMessage::Response {sender_id, .. } => *sender_id,
-        }
-    }
-
-    // Send a message to another node
-    pub async fn send(&self, socket: &UdpSocket, target: &SocketAddr) {
-        // **SIMULATOR CODE**
-        let mut target_real = target.clone();
-        {
-            let sim = SIM.lock().await;
-            let mut sim_running = false;
-
-            {
-                if !sim.sims.lock().await.is_empty() {
-                    sim_running = true;
-                }
-            }
-
-            if sim_running {
-                let node_running;
-                {
-                    node_running = sim.node_running_from_sim(*target).await;
-                }
-                if node_running {
-                    target_real = sim.get_socket_address(*target).await.expect("REASON");
-                } else {
-                    sim.add_node(*target).await.expect("REASON");
-                }
-                sim.lock_node_from_sim(*target).await;
-            }
-        }
-        // **END SIMULATOR CODE**
-
-        let message_bytes = serde_json::to_vec(self).unwrap();
-        socket.send_to(&message_bytes, target_real).await.unwrap();
-    }
-
-    async fn recv(response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
-                  rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>, time: u64) -> Option<KademliaMessage> {
-        // Lock before entering timeout
-        let mut rx_locked = rx.lock().await;
-        let response = match timeout(Duration::from_millis(time), async {
-            if !rx_locked.is_closed() {
-                rx_locked.recv().await
-            } else {
-                println!("tx is closed");
-                None
-            }
-        }).await {
-            Ok(Some(node_id)) => Some(node_id),
-            Ok(None) => {
-                println!("Received None from channel.");
-                None
-            },
-            Err(_) => {
-                println!("Timeout occurred while waiting for response.");
-                None
-            }
-        };
-
-        let mut position = -1;
-        let message_info;
-        let mut kad_msg = KademliaMessage::Response {
-            msg_id: None,
-            nodes: vec![],
-            value: None,
-            sender_id: 0,
-        };
-
-        let mut res_queue = response_queue.lock().await;
-        match response {
-            Some(mc) => {
-                if let Some(pos) = res_queue.get(&mc.node_id).unwrap().iter().position(|n|
-                    match n {
-                        &KademliaMessage::Response { msg_id, .. } => { msg_id == Option::from(mc.msg_id) }
-                        _ => { false }
-                    }) {
-                    position = pos as i32;
-                }
-                message_info = Some(mc);
-            },
-            None => {
-                return None;
-            }
-        };
-
-        let km = match message_info {
-            Some(mc) => {
-                let response_msg = res_queue.get(&mc.node_id).unwrap().get(position as usize).unwrap();
-                match response_msg {
-                    KademliaMessage::Response { msg_id, nodes, value, sender_id } => {
-                        kad_msg = KademliaMessage::Response {
-                            msg_id: *msg_id,
-                            nodes: nodes.clone(),
-                            value: value.clone(),
-                            sender_id: *sender_id,
-                        }
-                    },
-                    _ => {}
-                }
-                res_queue.get_mut(&mc.node_id).unwrap().remove(position as usize);
-                Some(kad_msg)
-            }
-            None => None
-        };
-
-        km
-    }
-}
-
 // Kademlia Struct
 pub struct Kademlia {
     pub node: Arc<Mutex<Node>>,
@@ -518,29 +94,6 @@ impl Kademlia {
             let mut buf = [0; 1024];
             while !stop_clone.load(Ordering::Relaxed) {
                 if let Ok((size, src)) = socket.recv_from(&mut buf).await {
-                    // **SIMULATOR CODE**
-                    {
-                        let sim = SIM.lock().await;
-                        let mut sim_running = false;
-
-                        {
-                            if !sim.sims.lock().await.is_empty() {
-                                sim_running = true;
-                            }
-                        }
-
-                        if sim_running {
-                            let node_running;
-                            {
-                                node_running = sim.node_running_from_real(src).await;
-                            }
-                            if node_running {
-                                sim.unlock_node_from_real(src).await;
-                            }
-                        }
-                    }
-                    // **END SIMULATOR CODE**
-
                     let self_ref;
                     {
                         self_ref = self_node.lock().await;
@@ -585,7 +138,25 @@ impl Kademlia {
                                 println!("Responding to message with {:?}", response);
                             }
 
-                            response.send(&socket, &src).await;
+                            // **SIMULATOR CODE**
+                            let mut sim_running = false;
+                            {
+                                let sim = SIM.lock().await;
+                                {
+                                    if !sim.sims.lock().await.is_empty() {
+                                        sim_running = true;
+                                    }
+                                }
+                            }
+
+                            if sim_running {
+                                response.send_sim(&socket, &src).await;
+                            } else {
+                                response.send(&socket, &src).await;
+                            }
+                            // **END SIMULATOR CODE**
+
+                            //response.send(&socket, &src).await;
                         }
 
                         // Store a key-value pair
@@ -618,7 +189,25 @@ impl Kademlia {
                                 }
                             };
 
-                            response.send(&socket, &src).await;
+                            // **SIMULATOR CODE**
+                            let mut sim_running = false;
+                            {
+                                let sim = SIM.lock().await;
+                                {
+                                    if !sim.sims.lock().await.is_empty() {
+                                        sim_running = true;
+                                    }
+                                }
+                            }
+
+                            if sim_running {
+                                response.send_sim(&socket, &src).await;
+                            } else {
+                                response.send(&socket, &src).await;
+                            }
+                            // **END SIMULATOR CODE**
+
+                            //response.send(&socket, &src).await;
                         }
 
                         KademliaMessage::Response { nodes, value, sender_id, .. } => {
@@ -705,9 +294,34 @@ impl Kademlia {
                             sender_id: self_id,
                         };
 
-                        message.send(&*socket_clone, &node_clone.address).await;
+                        // **SIMULATOR CODE**
+                        let mut sim_running = false;
+                        {
+                            let sim = SIM.lock().await;
+                            {
+                                if !sim.sims.lock().await.is_empty() {
+                                    sim_running = true;
+                                }
+                            }
+                        }
 
-                        let response = KademliaMessage::recv(response_queue, rx, 200).await;
+                        let response;
+                        if sim_running {
+                            message.send_sim(&socket_clone, &node_clone.address).await;
+
+                            // Wait up to 300ms for a response asynchronously
+                            response = KademliaMessage::recv_sim(response_queue, rx, 300, &node_clone.address).await;
+                        } else {
+                            message.send(&socket_clone, &node_clone.address).await;
+
+                            // Wait up to 300ms for a response asynchronously
+                            response = KademliaMessage::recv(response_queue, rx, 300).await;
+                        }
+                        // **END SIMULATOR CODE**
+
+                        //message.send(&*socket_clone, &node_clone.address).await;
+
+                        //let response = KademliaMessage::recv(response_queue, rx, 200).await;
 
                         return match response {
                             Some(msg) => {
@@ -811,9 +425,34 @@ impl Kademlia {
                             sender_id: self_id,
                         };
 
-                        message.send(&*socket_clone, &node_clone.address).await;
+                        // **SIMULATOR CODE**
+                        let mut sim_running = false;
+                        {
+                            let sim = SIM.lock().await;
+                            {
+                                if !sim.sims.lock().await.is_empty() {
+                                    sim_running = true;
+                                }
+                            }
+                        }
 
-                        let response = KademliaMessage::recv(response_queue, rx, 200).await;
+                        let response;
+                        if sim_running {
+                            message.send_sim(&socket_clone, &node_clone.address).await;
+
+                            // Wait up to 300ms for a response asynchronously
+                            response = KademliaMessage::recv_sim(response_queue, rx, 300, &node_clone.address).await;
+                        } else {
+                            message.send(&socket_clone, &node_clone.address).await;
+
+                            // Wait up to 300ms for a response asynchronously
+                            response = KademliaMessage::recv(response_queue, rx, 300).await;
+                        }
+                        // **END SIMULATOR CODE**
+
+                        //message.send(&*socket_clone, &node_clone.address).await;
+
+                        //let response = KademliaMessage::recv(response_queue, rx, 200).await;
 
                         return match response {
                             Some(msg) => {
@@ -894,8 +533,26 @@ impl Kademlia {
                 sender_id: self_node.id,
             };
 
+            // **SIMULATOR CODE**
+            let mut sim_running = false;
+            {
+                let sim = SIM.lock().await;
+                {
+                    if !sim.sims.lock().await.is_empty() {
+                        sim_running = true;
+                    }
+                }
+            }
+
+            if sim_running {
+                store_message.send_sim(&socket, &node.address).await;
+            } else {
+                store_message.send(&socket, &node.address).await;
+            }
+            // **END SIMULATOR CODE**
+
             // Send STORE message
-            store_message.send(&socket, &node.address).await;
+            //store_message.send(&socket, &node.address).await;
         }
 
         closest_nodes
@@ -921,9 +578,34 @@ impl Kademlia {
                 sender_id: self_node.id,
             };
 
-            message.send(&*socket, target).await;
+            // **SIMULATOR CODE**
+            let mut sim_running = false;
+            {
+                let sim = SIM.lock().await;
+                {
+                    if !sim.sims.lock().await.is_empty() {
+                        sim_running = true;
+                    }
+                }
+            }
 
-            let response = KademliaMessage::recv(response_queue, rx, 300).await;
+            let response;
+            if sim_running {
+                message.send_sim(&socket_clone, target).await;
+
+                // Wait up to 300ms for a response asynchronously
+                response = KademliaMessage::recv_sim(response_queue, rx, 300, target).await;
+            } else {
+                message.send(&socket_clone, target).await;
+
+                // Wait up to 300ms for a response asynchronously
+                response = KademliaMessage::recv(response_queue, rx, 300).await;
+            }
+            // **END SIMULATOR CODE**
+
+            //message.send(&*socket, target).await;
+
+            //let response = KademliaMessage::recv(response_queue, rx, 300).await;
 
             match response {
                 Some(msg) => {
@@ -1367,11 +1049,11 @@ impl Simulator {
 
 fn file_node_to_simulated(file_node: FileNode) -> SimulatedNode {
     let mut rt = RoutingTable::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() });
-    
+
     for node in file_node.routing_table {
         rt.insert_direct(node);
     }
-    
+
     SimulatedNode::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() }, rt, file_node.data_store, file_node.response_queue)
 }
 
@@ -1405,7 +1087,7 @@ pub fn save_simulated_nodes(file_path: &str, nodes: &Vec<SimulatedNode>) -> Resu
     for node in nodes {
         file_nodes.push(simulated_node_to_file(node.clone()));
     }
-    
+
     let json_string = serde_json::to_string_pretty(&file_nodes)?;
     let mut file = File::create(file_path)?;
     file.write_all(json_string.as_bytes())?;
@@ -1475,7 +1157,7 @@ mod kad_tests {
 
         println!("rt: {:?}", rt);
 
-        assert!(rt.buckets[index].contains(node.id), "Node should be in the routing table");
+        assert!(rt.buckets.get(&index).unwrap().contains(node.id), "Node should be in the routing table");
     }
 
     #[tokio::test]
@@ -1512,7 +1194,7 @@ mod kad_tests {
         let orig;
         {
             let rt = kad.routing_table.lock().await;
-            orig = rt.buckets[bucket_index].clone();
+            orig = rt.buckets.get(&bucket_index).unwrap().clone();
         }
 
         // One extra node to force a ping
@@ -1525,7 +1207,7 @@ mod kad_tests {
         let mut new;
         {
             let rt = kad.routing_table.lock().await;
-            new = rt.buckets[bucket_index].clone();
+            new = rt.buckets.get(&bucket_index).unwrap().clone();
         }
 
         // Ensure that the original bucket is the same
@@ -1539,8 +1221,8 @@ mod kad_tests {
 
         {
             let rt = kad.routing_table.lock().await;
-            new = rt.buckets[bucket_index].clone();
-            println!("Routing Table After Guaranteed LRU Removal: {:?}", rt.buckets[bucket_index]);
+            new = rt.buckets.get(&bucket_index).unwrap().clone();
+            println!("Routing Table After Guaranteed LRU Removal: {:?}", rt.buckets.get(&bucket_index).unwrap());
         }
 
         // Ensure that the original bucket has new node
@@ -1548,7 +1230,7 @@ mod kad_tests {
         {
             let rt = kad.routing_table.lock().await;
             assert!(
-                rt.buckets[bucket_index].contains(overflow_node.id),
+                rt.buckets.get(&bucket_index).unwrap().contains(overflow_node.id),
                 "Overflow node should be in the bucket"
             );
         }
