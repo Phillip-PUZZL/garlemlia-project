@@ -273,6 +273,10 @@ impl KademliaRoutingTable for RoutingTable {
                       response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
                       rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>,
                       node: Node, socket: &UdpSocket) {
+        if self.local_node.id == node.id {
+            return;
+        }
+
         let index = self.bucket_index(node.id);
 
         if self.check_buckets(node.clone(), index) {
@@ -333,20 +337,19 @@ impl KademliaRoutingTable for RoutingTable {
         // Find the closest bucket index to start searching from
         let closest_index_pos = bucket_indices
             .binary_search(&start_index)
-            .unwrap_or_else(|pos| pos); // If not found, returns where it should be inserted
+            .unwrap_or_else(|pos| pos.min(bucket_indices.len().saturating_sub(1))); // If not found, returns where it should be inserted
 
         let mut left = closest_index_pos as isize;
         let mut right = closest_index_pos as isize + 1;
 
         // Expand search outward from the closest bucket index
         while searched_buckets < bucket_indices.len() {
-            if left >= 0 {
+            if left >= 0 && (left as usize) < bucket_indices.len() {
                 if let Some(bucket) = self.buckets.get(&bucket_indices[left as usize]) {
                     for node in &bucket.nodes {
                         let distance = target_id ^ node.id;
                         heap.push(HeapNode { distance, node: node.clone() });
 
-                        // Keep only the closest 'count' nodes
                         if heap.len() > count {
                             heap.pop();
                         }
@@ -362,7 +365,6 @@ impl KademliaRoutingTable for RoutingTable {
                         let distance = target_id ^ node.id;
                         heap.push(HeapNode { distance, node: node.clone() });
 
-                        // Keep only the closest 'count' nodes
                         if heap.len() > count {
                             heap.pop();
                         }
@@ -372,7 +374,6 @@ impl KademliaRoutingTable for RoutingTable {
                 right += 1;
             }
 
-            // Stop early if we have enough nodes
             if heap.len() >= count && searched_buckets > 3 {
                 break;
             }
@@ -422,12 +423,14 @@ impl KMessage for MessageHandler {
     }
 
     async fn send(&self, socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) {
+        println!("send - real");
         let message_bytes = serde_json::to_vec(msg).unwrap();
         socket.send_to(&message_bytes, target).await.unwrap();
     }
 
     async fn recv(&self, response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
                   rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>, time: u64, _src: &SocketAddr) -> Option<KademliaMessage> {
+        println!("recv - real");
         // Lock before entering timeout
         let mut rx_locked = rx.lock().await;
         let response = match timeout(Duration::from_millis(time), async {
@@ -510,6 +513,7 @@ pub enum KademliaMessage {
     Store { key: u128, value: String, sender_id: u128 },
     FindValue { key: u128, sender_id: u128 },
     Response { msg_id: Option<u128>, nodes: Vec<Node>, value: Option<String>, sender_id: u128 },
+    Stop {},
 }
 
 impl KademliaMessage {
@@ -520,6 +524,7 @@ impl KademliaMessage {
             KademliaMessage::Store { sender_id, .. } => *sender_id,
             KademliaMessage::FindValue { sender_id, .. } => *sender_id,
             KademliaMessage::Response {sender_id, .. } => *sender_id,
+            KademliaMessage::Stop {} => 0,
         }
     }
 }
