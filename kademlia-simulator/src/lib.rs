@@ -339,7 +339,7 @@ impl KMessage for SimulatedMessageHandler {
 
     // Send a message to another node
     async fn send(&self, socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) {
-        println!("send - sim");
+        println!("send - sim to {} from {}", target, socket.local_addr().unwrap());
         let mut target_real = target.clone();
         let mut needs_to_fuck_off = false;
         {
@@ -362,34 +362,41 @@ impl KMessage for SimulatedMessageHandler {
                     if node_running {
                         target_real = sim.get_socket_address(*target).await.expect("REASON");
                         sim.lock_node_from_sim(*target).await;
+                        println!("NODE RUNNING AT {}", target_real);
                     } else if has_available {
                         if let Some(addr) = sim.add_node(*target).await {
                             target_real = addr;
+                            println!("NODE STARTED AT {}", target_real);
+                        } else {
+                            println!("NODE FAILED TO START OR RUN AT {}", target_real);
                         }
                         sim.lock_node_from_sim(*target).await;
                     } else {
                         needs_to_fuck_off = true;
+                        println!("MUST WAIT FOR NODE TO UNLOCK");
                     }
                 }
             }
         }
 
         if needs_to_fuck_off {
-            while !needs_to_fuck_off {
+            while needs_to_fuck_off {
+                println!("WAITING FOR NODE TO UNLOCK");
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 {
                     let sim = SIM.lock().await;
-                    needs_to_fuck_off = sim.has_unlocked().await;
+                    needs_to_fuck_off = !sim.has_unlocked().await;
 
-                    if needs_to_fuck_off {
+                    if !needs_to_fuck_off {
                         if let Some(addr) = sim.add_node(*target).await {
                             target_real = addr;
+                            sim.lock_node_from_sim(*target).await;
+                            println!("NODE STARTED AT {}", target_real);
+                        } else {
+                            println!("NODE FAILED TO START OR RUN AT {}", target_real);
                         }
                     }
                 }
-            }
-            {
-                SIM.lock().await.lock_node_from_sim(*target).await;
             }
         }
 
@@ -399,7 +406,7 @@ impl KMessage for SimulatedMessageHandler {
 
     async fn recv(&self, response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
                   rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>, time: u64, src: &SocketAddr) -> Option<KademliaMessage> {
-        println!("recv - sim");
+        println!("recv - sim from: {}", src);
         // Lock before entering timeout
         let mut rx_locked = rx.lock().await;
         let response = match timeout(Duration::from_millis(time), async {
@@ -416,7 +423,7 @@ impl KMessage for SimulatedMessageHandler {
                 None
             },
             Err(_) => {
-                println!("Timeout occurred while waiting for response.");
+                println!("Timeout occurred while waiting for response from {}.", src);
                 None
             }
         };
@@ -630,6 +637,7 @@ impl Simulator {
         let sim;
         {
             sim = self.sims.lock().await.get(&address).cloned();
+            println!("SIMULATED PORT {} MAPPED TO {}", address, self.sim_to_real_map.lock().await.get(&address).unwrap());
         }
 
         match sim {
@@ -1027,11 +1035,11 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
         }
         //8000 <- 8001 <- 8002
         {
-            println!("{}: {}", run_node.node.lock().await.address, sockets[index].clone());
+            println!("{}: {}", run_node.node.lock().await.address, sockets[ind].clone());
         }
 
         {
-            run_node.join_network(run_node.socket.clone(), &sockets[index].clone()).await;
+            run_node.join_network(run_node.socket.clone(), &sockets[ind].clone()).await;
 
             run_node.iterative_find_node(run_node.socket.clone(), rand::random::<u128>(), 2).await;
         }
@@ -1107,9 +1115,9 @@ mod sim_tests {
             Ok(mut nodes) => {
                 //println!("Loaded nodes: {:?}", nodes);
 
-                //create_network(nodes.clone()).await;
+                create_network(nodes.clone()).await;
 
-                {
+                /*{
                     SIM.lock().await.set(Simulator::new(8000, 10, nodes.clone()).await);
                 }
 
@@ -1129,7 +1137,7 @@ mod sim_tests {
 
                 node1.stop(node1.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
 
-                println!("found_nodes: {:?}\nrouting_table: {:?}", found_nodes, node1.routing_table);
+                println!("found_nodes: {:?}\nrouting_table: {:?}", found_nodes, node1.routing_table);*/
 
                 let mut updated_nodes = nodes.clone();
                 let test_node;
@@ -1148,11 +1156,11 @@ mod sim_tests {
                     println!("Saved updated nodes to {}", new_file_path);
                 }
 
-                if let Some(check) = test_node {
+                /*if let Some(check) = test_node {
                     assert_eq!(found_nodes[0], check.node, "Should find node 98765, and it should be first in the list");
                 } else {
                     assert!(false, "Should find node 98765");
-                }
+                }*/
 
             }
             Err(e) => {

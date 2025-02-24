@@ -86,6 +86,7 @@ impl Kademlia {
         let data_store = Arc::clone(&self.data_store);
         let stop_clone = Arc::clone(&self.stop_signal);
         let (tx, rx) = mpsc::unbounded_channel::<MessageChannel>();
+        println!("STARTING {}", socket.local_addr().unwrap());
 
         let handle = tokio::spawn(async move {
             let mut buf = [0; 1024];
@@ -96,6 +97,8 @@ impl Kademlia {
                         self_ref = self_node.lock().await;
                     }
                     let msg: KademliaMessage = serde_json::from_slice(&buf[..size]).unwrap();
+
+                    println!("{} received {:?}", socket.local_addr().unwrap(), msg);
 
                     // Extract sender Node info
                     let sender_node = Node {
@@ -202,13 +205,15 @@ impl Kademlia {
                                 //println!("Message sent successfully");
                             }
                         }
+
                         KademliaMessage::Stop {} => {
                             break;
                         }
                     }
                 }
             }
-            println!("Finished");
+            println!("FINISHED {}", socket.local_addr().unwrap());
+            drop(socket);
         });
         *Arc::get_mut(&mut self.join_handle).unwrap() = Some(handle);
         self.rx = Some(Arc::new(Mutex::new(rx)));

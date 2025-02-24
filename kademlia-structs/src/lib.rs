@@ -423,14 +423,14 @@ impl KMessage for MessageHandler {
     }
 
     async fn send(&self, socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) {
-        println!("send - real");
+        println!("send - real to {} from {}", target, socket.local_addr().unwrap());
         let message_bytes = serde_json::to_vec(msg).unwrap();
         socket.send_to(&message_bytes, target).await.unwrap();
     }
 
     async fn recv(&self, response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
-                  rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>, time: u64, _src: &SocketAddr) -> Option<KademliaMessage> {
-        println!("recv - real");
+                  rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>, time: u64, src: &SocketAddr) -> Option<KademliaMessage> {
+        println!("recv - real from: {}", src);
         // Lock before entering timeout
         let mut rx_locked = rx.lock().await;
         let response = match timeout(Duration::from_millis(time), async {
@@ -447,7 +447,7 @@ impl KMessage for MessageHandler {
                 None
             },
             Err(_) => {
-                println!("Timeout occurred while waiting for response.");
+                println!("Timeout occurred while waiting for response from {}.", src);
                 None
             }
         };
