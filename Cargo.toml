@@ -5,7 +5,4 @@ edition = "2021"
 
 [dependencies]
 kademlia = { path = "kademlia" }
-kademlia-simulator = { path = "kademlia-simulator" }
-rand = "0.9.0"
 tokio = { version = "1.43.0", features = ["full"] }
-num-traits = "0.2.19"

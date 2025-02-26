@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::net::{SocketAddr};
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
@@ -11,6 +13,7 @@ use tokio::task;
 use kademlia_structs::{Node, KademliaRoutingTable, MessageChannel, DEFAULT_K, KMessage, KademliaMessage};
 
 // Kademlia Struct
+#[derive(Clone)]
 pub struct Kademlia {
     pub node: Arc<Mutex<Node>>,
     pub socket: Arc<UdpSocket>,
@@ -19,6 +22,13 @@ pub struct Kademlia {
     pub routing_table: Arc<Mutex<Box<dyn KademliaRoutingTable>>>,
     pub data_store: Arc<Mutex<HashMap<u128, String>>>,
     pub response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
+    /// TODO: Change rx to a pool of available and unavailable rx
+    /// TODO: The unavailable rx should be associated with a hashmap with the expected
+    /// TODO: responder ID as the key, and the available pool should just be a Vec
+    /// TODO: Responders should get the same treatment. This solves the issue of potentially
+    /// TODO: getting a response from another node and thinking that this one is timed out
+    /// TODO: because it responded a little after. This should also remove the need for
+    /// TODO: the response queue.
     rx: Option<Arc<Mutex<UnboundedReceiver<MessageChannel>>>>,
     stop_signal: Arc<AtomicBool>,
     join_handle: Arc<Option<task::JoinHandle<()>>>,
@@ -43,11 +53,11 @@ impl Kademlia {
     }
 
     pub async fn set_node(&self, node: &mut Node) {
-        self.node.lock().await.set(node)
+        self.node.lock().await.update(node);
     }
 
     pub async fn set_routing_table(&self, rt: &dyn KademliaRoutingTable) {
-        self.routing_table.lock().await.set(rt);
+        self.routing_table.lock().await.update_from(rt);
     }
 
     pub async fn set_data_store(&self, data_store: &mut HashMap<u128, String>) {
@@ -89,7 +99,7 @@ impl Kademlia {
         println!("STARTING {}", socket.local_addr().unwrap());
 
         let handle = tokio::spawn(async move {
-            let mut buf = [0; 1024];
+            let mut buf = [0; 4096];
             while !stop_clone.load(Ordering::Relaxed) {
                 if let Ok((size, src)) = socket.recv_from(&mut buf).await {
                     let self_ref;
@@ -98,11 +108,11 @@ impl Kademlia {
                     }
                     let msg: KademliaMessage = serde_json::from_slice(&buf[..size]).unwrap();
 
-                    println!("{} received {:?}", socket.local_addr().unwrap(), msg);
+                    //println!("{} received {:?}", socket.local_addr().unwrap(), msg);
 
                     // Extract sender Node info
                     let sender_node = Node {
-                        id: msg.get_sender_id(),
+                        id: msg.sender_id(),
                         address: src,
                     };
 
@@ -200,7 +210,13 @@ impl Kademlia {
                             if cfg!(debug_assertions) {
                                 //println!("Sending message: {:?}", MessageChannel { node_id: sender_node.id, msg_id });
                             }
-                            tx.send(MessageChannel { node_id: sender_node.id, msg_id }).expect("TODO: panic message");
+                            let info = tx.send(MessageChannel { node_id: sender_node.id, msg_id });
+                            if info.is_err() {
+                                if tx.is_closed() {
+                                    println!("Receiver dropped");
+                                }
+                                eprintln!("Error sending message to channel {:?}", info.err().unwrap());
+                            }
                             if cfg!(debug_assertions) {
                                 //println!("Message sent successfully");
                             }
@@ -227,8 +243,9 @@ impl Kademlia {
             let _ = handle.await;
         }
 
-        let check = UdpSocket::bind(addr).await;
-        check.unwrap().send_to(&*serde_json::to_vec(&KademliaMessage::Stop {}).unwrap(), &stop_addr).await.unwrap();
+        let check = UdpSocket::bind(addr).await.unwrap();
+        check.send_to(&*serde_json::to_vec(&KademliaMessage::Stop {}).unwrap(), &stop_addr).await.unwrap();
+        drop(check);
     }
 
     pub async fn iterative_find_node(&self, socket: Arc<UdpSocket>, target_id: u128, guaranteed_times_searched: i32) -> Vec<Node> {
@@ -257,12 +274,12 @@ impl Kademlia {
                 let node_clone = node.clone();
                 let response_queue = Arc::clone(&self.response_queue);
                 let message_handler = self.message_handler.clone();
-                let self_id = self_node.id;
+                let self_id = self_node.id.clone();
 
                 self.add_node(&socket_clone, node_clone.clone()).await;
 
                 if let Some(rx) = &self.rx {
-                    let rx = Arc::clone(rx);
+                    let rx = Arc::clone(&rx);
                     // Spawn async task for each lookup request
                     let task = task::spawn(async move {
                         let message = KademliaMessage::FindNode {
@@ -274,20 +291,18 @@ impl Kademlia {
 
                         let response = message_handler.recv(response_queue, rx, 200, &node_clone.address).await;
 
-                        return match response {
-                            Some(msg) => {
-                                match msg {
-                                    KademliaMessage::Response { nodes, .. } => {
-                                        Some(nodes)
-                                    }
-                                    _ => {
-                                        None
-                                    }
+                        if response.is_ok() {
+                            let msg = response.unwrap();
+                            match msg {
+                                KademliaMessage::Response { nodes, .. } => {
+                                    Some(nodes)
                                 }
-                            },
-                            _ => {
-                                None
+                                _ => {
+                                    None
+                                }
                             }
+                        } else {
+                            None
                         }
                     });
 
@@ -313,10 +328,10 @@ impl Kademlia {
             }
 
             if new_nodes_found || times_searched < guaranteed_times_searched {
-                new_closest_nodes.retain(|x| *x != self_node);
                 closest_nodes.clear();
                 closest_nodes.extend(new_closest_nodes.clone());
                 all_nodes.extend(new_closest_nodes);
+                closest_nodes.retain(|x| *x != self_node);
                 closest_nodes.sort_by_key(|n| n.id ^ target_id);
                 closest_nodes.dedup();
             }
@@ -384,23 +399,21 @@ impl Kademlia {
 
                         let response = message_handler.recv(response_queue, rx, 200, &node_clone.address).await;
 
-                        return match response {
-                            Some(msg) => {
-                                match msg {
-                                    KademliaMessage::Response { nodes, value, .. } => {
-                                        if let Some(value) = value {
-                                            return Some(Ok(value))
-                                        }
-                                        Some(Err(nodes))
+                        if response.is_ok() {
+                            let msg = response.unwrap();
+                            match msg {
+                                KademliaMessage::Response { nodes, value, .. } => {
+                                    if let Some(value) = value {
+                                        return Some(Ok(value))
                                     }
-                                    _ => {
-                                        Some(Err(vec![]))
-                                    }
+                                    Some(Err(nodes))
                                 }
-                            },
-                            _ => {
-                                Some(Err(vec![]))
+                                _ => {
+                                    Some(Err(vec![]))
+                                }
                             }
+                        } else {
+                            Some(Err(vec![]))
                         }
                     });
 
@@ -476,17 +489,20 @@ impl Kademlia {
 
     // Add a node to the routing table
     pub async fn add_node(&self, socket: &UdpSocket, node: Node) {
-        if let Some(rx) = &self.rx {
-            let rx = Arc::clone(rx);
-            let response_queue = Arc::clone(&self.response_queue);
-            self.routing_table.lock().await.add_node(response_queue, rx, node, socket).await;
+        let self_node = self.get_node().await;
+        if node.id != self_node.id {
+            if let Some(rx) = &self.rx {
+                let rx = Arc::clone(&rx);
+                let response_queue = Arc::clone(&self.response_queue);
+                self.routing_table.lock().await.add_node(response_queue, rx, node, socket).await;
+            }
         }
     }
 
     pub async fn join_network(&self, socket: Arc<UdpSocket>, target: &SocketAddr) {
         let self_node = self.get_node().await;
         if let Some(rx) = &self.rx {
-            let rx = Arc::clone(rx);
+            let rx = Arc::clone(&rx);
             let socket_clone = Arc::clone(&socket);
             let response_queue = Arc::clone(&self.response_queue);
             let message = KademliaMessage::FindNode {
@@ -494,35 +510,27 @@ impl Kademlia {
                 sender_id: self_node.id,
             };
 
-            {
-                if self.node.lock().await.address.port() == 8012 {
-                    println!("");
+            self.message_handler.send(&socket, &target, &message).await;
+
+            //println!("Before");
+            let response = self.message_handler.recv(response_queue, rx, 200, &target).await;
+            //println!("After");
+
+            if response.is_ok() {
+                let msg = response.unwrap();
+                match msg {
+                    KademliaMessage::Response { nodes, .. } => {
+                        for node in nodes {
+                            if node.id != self_node.id {
+                                self.add_node(&*socket, node.clone()).await;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
 
-            self.message_handler.send(&socket, &target, &message).await;
-
-            println!("Before");
-            let response = self.message_handler.recv(response_queue, rx, 200, &target).await;
-            println!("After");
-
-            match response {
-                Some(msg) => {
-                    match msg {
-                        KademliaMessage::Response { nodes, .. } => {
-                            for node in nodes {
-                                if node.id != self_node.id {
-                                    self.add_node(&*socket, node.clone()).await;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                },
-                _ => {}
-            }
-
-            self.iterative_find_node(socket_clone, self_node.id, 3).await;
+            self.iterative_find_node(socket_clone, self_node.id, 0).await;
         }
     }
 }
@@ -589,7 +597,7 @@ mod kad_tests {
 
         println!("rt: {:?}", rt);
 
-        assert!(rt.get_buckets().get(&index).unwrap().contains(node.id), "Node should be in the routing table");
+        assert!(rt.buckets().get(&index).unwrap().contains(node.id), "Node should be in the routing table");
     }
 
     #[tokio::test]
@@ -626,7 +634,7 @@ mod kad_tests {
         let orig;
         {
             let rt = kad.routing_table.lock().await;
-            orig = rt.get_buckets().get(&bucket_index).unwrap().clone();
+            orig = rt.buckets().get(&bucket_index).unwrap().clone();
         }
 
         // One extra node to force a ping
@@ -639,7 +647,7 @@ mod kad_tests {
         let mut new;
         {
             let rt = kad.routing_table.lock().await;
-            new = rt.get_buckets().get(&bucket_index).unwrap().clone();
+            new = rt.buckets().get(&bucket_index).unwrap().clone();
         }
 
         // Ensure that the original bucket is the same
@@ -653,8 +661,8 @@ mod kad_tests {
 
         {
             let rt = kad.routing_table.lock().await;
-            new = rt.get_buckets().get(&bucket_index).unwrap().clone();
-            println!("Routing Table After Guaranteed LRU Removal: {:?}", rt.get_buckets().get(&bucket_index).unwrap());
+            new = rt.buckets().get(&bucket_index).unwrap().clone();
+            println!("Routing Table After Guaranteed LRU Removal: {:?}", rt.buckets().get(&bucket_index).unwrap());
         }
 
         // Ensure that the original bucket has new node
@@ -662,7 +670,7 @@ mod kad_tests {
         {
             let rt = kad.routing_table.lock().await;
             assert!(
-                rt.get_buckets().get(&bucket_index).unwrap().contains(overflow_node.id),
+                rt.buckets().get(&bucket_index).unwrap().contains(overflow_node.id),
                 "Overflow node should be in the bucket"
             );
         }
