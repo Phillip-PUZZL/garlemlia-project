@@ -116,52 +116,21 @@ impl KBucket {
     }
 }
 
-#[async_trait]
-pub trait KademliaRoutingTable: Send + Sync + Debug {
-    fn new(local_node: Node) -> Self
-    where
-        Self: Sized;
-    fn update_from(&mut self, other: &dyn KademliaRoutingTable);
-    fn local_node(&self) -> &Node;
-    fn buckets(&self) -> &HashMap<u8, KBucket>;
-    fn bucket_index(&self, node_id: u128) -> u8;
-    fn flat_nodes(&self) -> Vec<Node>;
-    fn insert_direct(&mut self, node: Node);
-    fn check_and_update_bucket(&mut self, node: Node, index: u8) -> bool;
-    async fn add_node_from_responder(&mut self, node: Node, socket: &UdpSocket);
-    async fn add_node(
-        &mut self,
-        response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
-        rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>,
-        node: Node,
-        socket: &UdpSocket,
-    );
-    fn find_closest_nodes(&self, target_id: u128, count: usize) -> Vec<Node>;
-    fn clone_box(&self) -> Box<dyn KademliaRoutingTable>;
-}
-
-impl Clone for Box<dyn KademliaRoutingTable> {
-    fn clone(&self) -> Box<dyn KademliaRoutingTable> {
-        self.clone_box()
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RoutingTable {
     local_node: Node,
     buckets: HashMap<u8, KBucket>,
 }
 
-#[async_trait]
-impl KademliaRoutingTable for RoutingTable {
-    fn new(local_node: Node) -> Self {
+impl RoutingTable {
+    pub fn new(local_node: Node) -> Self {
         Self {
             local_node,
             buckets: HashMap::new(),
         }
     }
 
-    fn update_from(&mut self, other: &dyn KademliaRoutingTable) {
+    pub fn update_from(&mut self, other: RoutingTable) {
         self.local_node = other.local_node().clone();
         self.buckets = other.buckets().clone();
     }
@@ -170,23 +139,23 @@ impl KademliaRoutingTable for RoutingTable {
         &self.local_node
     }
 
-    fn buckets(&self) -> &HashMap<u8, KBucket> {
+    pub fn buckets(&self) -> &HashMap<u8, KBucket> {
         &self.buckets
     }
 
-    fn bucket_index(&self, node_id: u128) -> u8 {
+    pub fn bucket_index(&self, node_id: u128) -> u8 {
         let xor_distance = self.local_node.id ^ node_id;
         (128 - xor_distance.leading_zeros()) as u8
     }
 
-    fn flat_nodes(&self) -> Vec<Node> {
+    pub fn flat_nodes(&self) -> Vec<Node> {
         self.buckets
             .values()
             .flat_map(|bucket| bucket.nodes.iter().cloned())
             .collect()
     }
 
-    fn insert_direct(&mut self, node: Node) {
+    pub fn insert_direct(&mut self, node: Node) {
         let index = self.bucket_index(node.id);
         self.buckets
             .entry(index)
@@ -208,7 +177,7 @@ impl KademliaRoutingTable for RoutingTable {
         }
     }
 
-    async fn add_node_from_responder(&mut self, node: Node, socket: &UdpSocket) {
+    pub async fn add_node_from_responder(&mut self, node: Node, socket: &UdpSocket) {
         let index = self.bucket_index(node.id);
         if self.check_and_update_bucket(node.clone(), index) {
             return;
@@ -249,8 +218,9 @@ impl KademliaRoutingTable for RoutingTable {
         }
     }
 
-    async fn add_node(
+    pub async fn add_node(
         &mut self,
+        message_handler: &dyn KMessage,
         response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
         rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>,
         node: Node,
@@ -270,14 +240,14 @@ impl KademliaRoutingTable for RoutingTable {
                 sender_id: self.local_node.id,
             };
 
-            if let Err(e) = MessageHandler::create().send(socket, &lru_node.address, &ping_msg).await {
+            if let Err(e) = message_handler.send(socket, &lru_node.address, &ping_msg).await {
                 eprintln!("Failed to send ping to {}: {:?}", lru_node.address, e);
                 bucket.remove(&lru_node);
                 bucket.insert(node);
                 return;
             }
 
-            match MessageHandler::create()
+            match message_handler
                 .recv(response_queue, rx, 300, &lru_node.address)
                 .await
             {
@@ -292,7 +262,7 @@ impl KademliaRoutingTable for RoutingTable {
         }
     }
 
-    fn find_closest_nodes(&self, target_id: u128, count: usize) -> Vec<Node> {
+    pub fn find_closest_nodes(&self, target_id: u128, count: usize) -> Vec<Node> {
         let mut heap = BinaryHeap::new();
         heap.push(HeapNode {
             distance: target_id ^ self.local_node.id,
@@ -346,10 +316,6 @@ impl KademliaRoutingTable for RoutingTable {
         }
 
         heap.into_sorted_vec().into_iter().map(|hn| hn.node).collect()
-    }
-
-    fn clone_box(&self) -> Box<dyn KademliaRoutingTable> {
-        Box::new(self.clone())
     }
 }
 

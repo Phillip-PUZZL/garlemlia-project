@@ -1,16 +1,13 @@
 use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
 use std::net::{SocketAddr};
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use rand::Rng;
-use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task;
-use kademlia_structs::{Node, KademliaRoutingTable, MessageChannel, DEFAULT_K, KMessage, KademliaMessage};
+use kademlia_structs::{Node, MessageChannel, DEFAULT_K, KMessage, KademliaMessage, RoutingTable};
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -19,7 +16,7 @@ pub struct Kademlia {
     pub socket: Arc<UdpSocket>,
     pub receive_addr: SocketAddr,
     pub message_handler: Box<dyn KMessage>,
-    pub routing_table: Arc<Mutex<Box<dyn KademliaRoutingTable>>>,
+    pub routing_table: Arc<Mutex<RoutingTable>>,
     pub data_store: Arc<Mutex<HashMap<u128, String>>>,
     pub response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
     /// TODO: Change rx to a pool of available and unavailable rx
@@ -35,7 +32,7 @@ pub struct Kademlia {
 }
 
 impl Kademlia {
-    pub async fn new(id: u128, address: &str, port: u16, rt: Box<dyn KademliaRoutingTable>, msg_handler: Box<dyn KMessage>) -> Self {
+    pub async fn new(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn KMessage>) -> Self {
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
 
         Self {
@@ -56,7 +53,7 @@ impl Kademlia {
         self.node.lock().await.update(node);
     }
 
-    pub async fn set_routing_table(&self, rt: &dyn KademliaRoutingTable) {
+    pub async fn set_routing_table(&self, rt: RoutingTable) {
         self.routing_table.lock().await.update_from(rt);
     }
 
@@ -493,8 +490,9 @@ impl Kademlia {
         if node.id != self_node.id {
             if let Some(rx) = &self.rx {
                 let rx = Arc::clone(&rx);
+                let message_handler = self.message_handler.clone();
                 let response_queue = Arc::clone(&self.response_queue);
-                self.routing_table.lock().await.add_node(response_queue, rx, node, socket).await;
+                self.routing_table.lock().await.add_node(&*message_handler, response_queue, rx, node, socket).await;
             }
         }
     }
@@ -544,7 +542,7 @@ mod kad_tests {
     use kademlia_structs::{MessageHandler, Node, RoutingTable, DEFAULT_K};
 
     async fn create_test_node(id: u128, port: u16) -> Kademlia {
-        let mut node = Kademlia::new(id, "127.0.0.1", port,Box::new(RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)})), MessageHandler::create()).await;
+        let mut node = Kademlia::new(id, "127.0.0.1", port, RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)}), MessageHandler::create()).await;
 
         // Spawn a task to keep the node running and listening
         node.start(Arc::clone(&node.socket)).await;
