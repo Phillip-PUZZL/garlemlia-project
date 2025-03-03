@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task;
-use kademlia_structs::{Node, MessageChannel, DEFAULT_K, KMessage, KademliaMessage, RoutingTable};
+use kademlia_structs::{Node, MessageChannel, DEFAULT_K, KMessage, KademliaMessage, RoutingTable, MessageError};
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -15,18 +15,9 @@ pub struct Kademlia {
     pub node: Arc<Mutex<Node>>,
     pub socket: Arc<UdpSocket>,
     pub receive_addr: SocketAddr,
-    pub message_handler: Box<dyn KMessage>,
+    pub message_handler: Arc<Box<dyn KMessage>>,
     pub routing_table: Arc<Mutex<RoutingTable>>,
     pub data_store: Arc<Mutex<HashMap<u128, String>>>,
-    pub response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
-    /// TODO: Change rx to a pool of available and unavailable rx
-    /// TODO: The unavailable rx should be associated with a hashmap with the expected
-    /// TODO: responder ID as the key, and the available pool should just be a Vec
-    /// TODO: Responders should get the same treatment. This solves the issue of potentially
-    /// TODO: getting a response from another node and thinking that this one is timed out
-    /// TODO: because it responded a little after. This should also remove the need for
-    /// TODO: the response queue.
-    rx: Option<Arc<Mutex<UnboundedReceiver<MessageChannel>>>>,
     stop_signal: Arc<AtomicBool>,
     join_handle: Arc<Option<task::JoinHandle<()>>>,
 }
@@ -39,11 +30,9 @@ impl Kademlia {
             node: Arc::new(Mutex::new(node)),
             socket: Arc::new(UdpSocket::bind(format!("{}:{}", address, port)).await.unwrap()),
             receive_addr: format!("{address}:{port}").parse().unwrap(),
-            message_handler: msg_handler,
+            message_handler: Arc::new(msg_handler),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
-            response_queue: Arc::new(Mutex::new(HashMap::new())),
-            rx: None,
             stop_signal: Arc::new(AtomicBool::new(false)),
             join_handle: Arc::new(None),
         }
@@ -66,15 +55,6 @@ impl Kademlia {
         }
     }
 
-    pub async fn set_response_queue(&self, response_queue: &mut HashMap<u128, Vec<KademliaMessage>>) {
-        let mut rq = self.response_queue.lock().await;
-        rq.clear();
-
-        for i in response_queue.iter() {
-            rq.insert(*i.0, i.1.clone());
-        }
-    }
-
     async fn get_node(&self) -> Node {
         let node;
         {
@@ -87,12 +67,10 @@ impl Kademlia {
     pub async fn start(&mut self, orig_socket: Arc<UdpSocket>) {
         let self_node = Arc::clone(&self.node);
         let socket = Arc::clone(&orig_socket);
-        let message_handler = self.message_handler.clone();
+        let mut message_handler = Arc::clone(&self.message_handler);
         let routing_table = Arc::clone(&self.routing_table);
-        let response_queue = Arc::clone(&self.response_queue);
         let data_store = Arc::clone(&self.data_store);
         let stop_clone = Arc::clone(&self.stop_signal);
-        let (tx, rx) = mpsc::unbounded_channel::<MessageChannel>();
         println!("STARTING {}", socket.local_addr().unwrap());
 
         let handle = tokio::spawn(async move {
@@ -114,27 +92,25 @@ impl Kademlia {
                     };
 
                     if cfg!(debug_assertions) {
-                        //println!("Received msg {:?} from {:?} to {:?}", msg, sender_node, self_ref);
+                        println!("Received msg {:?} from {:?} to {:?}", msg, sender_node, self_ref);
                     }
 
                     match msg {
                         KademliaMessage::FindNode { id, .. } => {
                             let mut rt = routing_table.lock().await;
                             // Add the sender to the routing table
-                            rt.add_node_from_responder(sender_node.clone(), &socket).await;
+                            rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
                             let response = if id == self_ref.id {
                                 // If the search target is this node itself, return only this node
                                 KademliaMessage::Response {
-                                    msg_id: None,
                                     nodes: vec![self_ref.clone()],
                                     value: None,
                                     sender_id: self_ref.id,
                                 }
                             } else {
                                 // Return the closest known nodes
-                                let closest_nodes = rt.find_closest_nodes(id, DEFAULT_K);
+                                let closest_nodes = rt.find_closest_nodes(id, DEFAULT_K).await;
                                 KademliaMessage::Response {
-                                    msg_id: None,
                                     nodes: closest_nodes,
                                     value: None,
                                     sender_id: self_ref.id,
@@ -145,46 +121,47 @@ impl Kademlia {
                                 //println!("Responding to message with {:?}", response);
                             }
 
-                            message_handler.send(&socket, &src, &response).await;
+                            if let Err(e) = message_handler.send_no_recv(&socket, &src, &response).await {
+                                eprintln!("Failed to send response to {}: {:?}", src, e);
+                            }
                         }
 
                         // Store a key-value pair
                         KademliaMessage::Store { key, value, .. } => {
-                            routing_table.lock().await.add_node_from_responder(sender_node.clone(), &socket).await;
+                            routing_table.lock().await.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
                             data_store.lock().await.insert(key, value);
                         }
 
                         // Use find_closest_nodes() if value is not found
                         KademliaMessage::FindValue { key, .. } => {
                             let mut rt = routing_table.lock().await;
-                            rt.add_node_from_responder(sender_node.clone(), &socket).await;
+
+                            rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
                             let value = data_store.lock().await.get(&key).cloned();
 
                             let response = if let Some(val) = value {
                                 KademliaMessage::Response {
-                                    msg_id: None,
                                     nodes: vec![],
                                     value: Some(val),
                                     sender_id: self_ref.id,
                                 }
                             } else {
-                                let closest_nodes = rt.find_closest_nodes(key, DEFAULT_K);
+                                let closest_nodes = rt.find_closest_nodes(key, DEFAULT_K).await;
 
                                 KademliaMessage::Response {
-                                    msg_id: None,
                                     nodes: closest_nodes,
                                     value: None,
                                     sender_id: self_ref.id,
                                 }
                             };
 
-                            message_handler.send(&socket, &src, &response).await;
+                            if let Err(e) = message_handler.send_no_recv(&socket, &src, &response).await {
+                                eprintln!("Failed to send response to {}: {:?}", src, e);
+                            }
                         }
 
                         KademliaMessage::Response { nodes, value, sender_id, .. } => {
-                            let msg_id = rand::rng().random::<u128>();
                             let constructed = KademliaMessage::Response {
-                                msg_id: Some(msg_id),
                                 nodes,
                                 value,
                                 sender_id,
@@ -194,29 +171,33 @@ impl Kademlia {
                                 //println!("Responded with {:?}", constructed);
                             }
 
-                            {
-                                let mut locked_queue = response_queue.lock().await;
-                                match locked_queue.get_mut(&sender_node.id) {
-                                    Some(queue) => queue.push(constructed),
-                                    None => {
-                                        locked_queue.insert(sender_node.id, vec![constructed]);
-                                    }
-                                }
-                            } // Mutex unlocked here before send()
-
                             if cfg!(debug_assertions) {
                                 //println!("Sending message: {:?}", MessageChannel { node_id: sender_node.id, msg_id });
                             }
-                            let info = tx.send(MessageChannel { node_id: sender_node.id, msg_id });
-                            if info.is_err() {
-                                if tx.is_closed() {
-                                    println!("Receiver dropped");
+                            let tx_info = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: constructed }).await;
+
+                            match tx_info {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!("Failed to send TX for message from {}: {:?}", src, e);
                                 }
-                                eprintln!("Error sending message to channel {:?}", info.err().unwrap());
                             }
-                            if cfg!(debug_assertions) {
-                                //println!("Message sent successfully");
-                            }
+                            /*if let Some(tx_info) = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: constructed }).await {
+                                let tx = tx_info.tx.lock().await;
+                                let info = tx.send(MessageChannel { node_id: sender_node.id, msg: constructed });
+                                if info.is_err() {
+                                    if tx.is_closed() {
+                                        println!("Receiver dropped");
+                                    }
+                                    eprintln!("Error sending message to channel {:?}", info.err().unwrap());
+                                }
+                                if cfg!(debug_assertions) {
+                                    println!("Message sent successfully");
+                                }
+                            } else {
+                                eprintln!("No tx found for response message from {}", sender_node.address);
+                            }*/
+
                         }
 
                         KademliaMessage::Stop {} => {
@@ -229,10 +210,9 @@ impl Kademlia {
             drop(socket);
         });
         *Arc::get_mut(&mut self.join_handle).unwrap() = Some(handle);
-        self.rx = Some(Arc::new(Mutex::new(rx)));
     }
 
-    pub async fn stop(&self, stop_addr: SocketAddr, addr: SocketAddr) {
+    pub async fn stop(&self) {
         self.stop_signal.store(true, Ordering::Relaxed);
 
         if let Some(handle) = Arc::get_mut(&mut self.join_handle.clone()).and_then(|h| h.take()) {
@@ -240,15 +220,13 @@ impl Kademlia {
             let _ = handle.await;
         }
 
-        let check = UdpSocket::bind(addr).await.unwrap();
-        check.send_to(&*serde_json::to_vec(&KademliaMessage::Stop {}).unwrap(), &stop_addr).await.unwrap();
-        drop(check);
+        self.socket.send_to(&*serde_json::to_vec(&KademliaMessage::Stop {}).unwrap(), &self.receive_addr).await.unwrap();
     }
 
     pub async fn iterative_find_node(&self, socket: Arc<UdpSocket>, target_id: u128, guaranteed_times_searched: i32) -> Vec<Node> {
         let self_node = self.get_node().await;
         let mut queried_nodes = HashSet::new();
-        let mut closest_nodes = self.routing_table.lock().await.find_closest_nodes(target_id, DEFAULT_K);
+        let mut closest_nodes = self.routing_table.lock().await.find_closest_nodes(target_id, DEFAULT_K).await;
         closest_nodes.retain(|x| *x != self_node);
         let mut all_nodes = closest_nodes.clone();
         let mut best_known_distance = u128::MAX;
@@ -269,42 +247,45 @@ impl Kademlia {
                 queried_nodes.insert(node.address);
                 let socket_clone = Arc::clone(&socket);
                 let node_clone = node.clone();
-                let response_queue = Arc::clone(&self.response_queue);
-                let message_handler = self.message_handler.clone();
+                let mut message_handler = Arc::clone(&self.message_handler);
                 let self_id = self_node.id.clone();
 
                 self.add_node(&socket_clone, node_clone.clone()).await;
 
-                if let Some(rx) = &self.rx {
-                    let rx = Arc::clone(&rx);
-                    // Spawn async task for each lookup request
-                    let task = task::spawn(async move {
-                        let message = KademliaMessage::FindNode {
-                            id: target_id,
-                            sender_id: self_id,
-                        };
+                // Spawn async task for each lookup request
+                let task = task::spawn(async move {
+                    let message = KademliaMessage::FindNode {
+                        id: target_id,
+                        sender_id: self_id,
+                    };
 
-                        message_handler.send(&socket_clone, &node_clone.address, &message).await;
-
-                        let response = message_handler.recv(response_queue, rx, 200, &node_clone.address).await;
-
-                        if response.is_ok() {
-                            let msg = response.unwrap();
-                            match msg {
-                                KademliaMessage::Response { nodes, .. } => {
-                                    Some(nodes)
-                                }
-                                _ => {
-                                    None
-                                }
-                            }
-                        } else {
-                            None
+                    {
+                        if let Err(e) = message_handler.send(&socket_clone, &node_clone.address, &message).await {
+                            eprintln!("Failed to send FindNode to {}: {:?}", node_clone.address, e);
                         }
-                    });
+                    }
 
-                    tasks.push(task);
-                }
+                    let response;
+                    {
+                        response = message_handler.recv(200, &node_clone.address).await;
+                    }
+
+                    if response.is_ok() {
+                        let msg = response.unwrap();
+                        match msg {
+                            KademliaMessage::Response { nodes, .. } => {
+                                Some(nodes)
+                            }
+                            _ => {
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+                tasks.push(task);
             }
 
             // Collect results from tasks
@@ -357,7 +338,7 @@ impl Kademlia {
 
         let mut queried_nodes = HashSet::new();
         queried_nodes.insert(self_node.address);
-        let mut closest_nodes = self.routing_table.lock().await.find_closest_nodes(key, DEFAULT_K);
+        let mut closest_nodes = self.routing_table.lock().await.find_closest_nodes(key, DEFAULT_K).await;
         closest_nodes.retain(|x| *x != self_node);
         let mut best_known_distance = u128::MAX;
         let mut new_nodes_found = true;
@@ -377,45 +358,48 @@ impl Kademlia {
                 queried_nodes.insert(node.address);
                 let socket_clone = Arc::clone(&socket);
                 let node_clone = node.clone();
-                let response_queue = Arc::clone(&self.response_queue);
-                let message_handler = self.message_handler.clone();
+                let mut message_handler = Arc::clone(&self.message_handler);
                 let self_id = self_node.id;
 
                 self.add_node(&socket_clone, node_clone.clone()).await;
 
-                if let Some(rx) = &self.rx {
-                    let rx = Arc::clone(rx);
-                    // Spawn async task for each lookup request
-                    let task = task::spawn(async move {
-                        let message = KademliaMessage::FindValue {
-                            key,
-                            sender_id: self_id,
-                        };
+                // Spawn async task for each lookup request
+                let task = task::spawn(async move {
+                    let message = KademliaMessage::FindValue {
+                        key,
+                        sender_id: self_id,
+                    };
 
-                        message_handler.send(&socket_clone, &node_clone.address, &message).await;
-
-                        let response = message_handler.recv(response_queue, rx, 200, &node_clone.address).await;
-
-                        if response.is_ok() {
-                            let msg = response.unwrap();
-                            match msg {
-                                KademliaMessage::Response { nodes, value, .. } => {
-                                    if let Some(value) = value {
-                                        return Some(Ok(value))
-                                    }
-                                    Some(Err(nodes))
-                                }
-                                _ => {
-                                    Some(Err(vec![]))
-                                }
-                            }
-                        } else {
-                            Some(Err(vec![]))
+                    {
+                        if let Err(e) = message_handler.send(&socket_clone, &node_clone.address, &message).await {
+                            eprintln!("Failed to send FindValue to {}: {:?}", node_clone.address, e);
                         }
-                    });
+                    }
 
-                    tasks.push(task);
-                }
+                    let response;
+                    {
+                        response = message_handler.recv(200, &node_clone.address).await;
+                    }
+
+                    if response.is_ok() {
+                        let msg = response.unwrap();
+                        match msg {
+                            KademliaMessage::Response { nodes, value, .. } => {
+                                if let Some(value) = value {
+                                    return Some(Ok(value))
+                                }
+                                Some(Err(nodes))
+                            }
+                            _ => {
+                                Some(Err(vec![]))
+                            }
+                        }
+                    } else {
+                        Some(Err(vec![]))
+                    }
+                });
+
+                tasks.push(task);
             }
 
             // Collect results from tasks
@@ -453,7 +437,7 @@ impl Kademlia {
         None
     }
 
-    pub async fn store_value(&self, socket: Arc<UdpSocket>, key: u128, value: String) -> Vec<Node> {
+    pub async fn store_value(&mut self, socket: Arc<UdpSocket>, key: u128, value: String) -> Vec<Node> {
         let self_node = self.get_node().await;
         // Find the closest nodes to store the value
         let mut closest_nodes = self.iterative_find_node(Arc::clone(&socket), key, 2).await;
@@ -477,7 +461,9 @@ impl Kademlia {
 
             // Send STORE message
             {
-                self.message_handler.send(&socket, &node.address, &store_message).await;
+                if let Err(e) = self.message_handler.send_no_recv(&socket, &node.address, &store_message).await {
+                    eprintln!("Failed to send Store to {}: {:?}", node.address, e);
+                }
             }
         }
 
@@ -488,48 +474,45 @@ impl Kademlia {
     pub async fn add_node(&self, socket: &UdpSocket, node: Node) {
         let self_node = self.get_node().await;
         if node.id != self_node.id {
-            if let Some(rx) = &self.rx {
-                let rx = Arc::clone(&rx);
-                let message_handler = self.message_handler.clone();
-                let response_queue = Arc::clone(&self.response_queue);
-                self.routing_table.lock().await.add_node(&*message_handler, response_queue, rx, node, socket).await;
-            }
+            let message_handler = Arc::clone(&self.message_handler);
+            self.routing_table.lock().await.add_node(message_handler, node, socket).await;
         }
     }
 
-    pub async fn join_network(&self, socket: Arc<UdpSocket>, target: &SocketAddr) {
+    pub async fn join_network(&mut self, socket: Arc<UdpSocket>, target: &SocketAddr) {
         let self_node = self.get_node().await;
-        if let Some(rx) = &self.rx {
-            let rx = Arc::clone(&rx);
-            let socket_clone = Arc::clone(&socket);
-            let response_queue = Arc::clone(&self.response_queue);
-            let message = KademliaMessage::FindNode {
-                id: self_node.id,
-                sender_id: self_node.id,
-            };
+        let socket_clone = Arc::clone(&socket);
+        let message = KademliaMessage::FindNode {
+            id: self_node.id,
+            sender_id: self_node.id,
+        };
 
-            self.message_handler.send(&socket, &target, &message).await;
+        {
+            if let Err(e) = self.message_handler.send(&socket, &target, &message).await {
+                eprintln!("Failed to send FindNode to {}: {:?}", target, e);
+            }
+        }
 
-            //println!("Before");
-            let response = self.message_handler.recv(response_queue, rx, 200, &target).await;
-            //println!("After");
+        let response;
+        {
+            response = self.message_handler.recv(200, &target).await;
+        }
 
-            if response.is_ok() {
-                let msg = response.unwrap();
-                match msg {
-                    KademliaMessage::Response { nodes, .. } => {
-                        for node in nodes {
-                            if node.id != self_node.id {
-                                self.add_node(&*socket, node.clone()).await;
-                            }
+        if response.is_ok() {
+            let msg = response.unwrap();
+            match msg {
+                KademliaMessage::Response { nodes, .. } => {
+                    for node in nodes {
+                        if node.id != self_node.id {
+                            self.add_node(&*socket, node.clone()).await;
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
-
-            self.iterative_find_node(socket_clone, self_node.id, 0).await;
         }
+
+        self.iterative_find_node(socket_clone, self_node.id, 0).await;
     }
 }
 
@@ -542,7 +525,7 @@ mod kad_tests {
     use kademlia_structs::{MessageHandler, Node, RoutingTable, DEFAULT_K};
 
     async fn create_test_node(id: u128, port: u16) -> Kademlia {
-        let mut node = Kademlia::new(id, "127.0.0.1", port, RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)}), MessageHandler::create()).await;
+        let mut node = Kademlia::new(id, "127.0.0.1", port, RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)}), MessageHandler::create(1)).await;
 
         // Spawn a task to keep the node running and listening
         node.start(Arc::clone(&node.socket)).await;
@@ -553,8 +536,8 @@ mod kad_tests {
     #[tokio::test]
     async fn test_iterative_find_node() {
         // Create multiple nodes and bind them to real sockets
-        let node1 = create_test_node(1, 8005).await;
-        let node2 = create_test_node(2, 8006).await;
+        let mut node1 = create_test_node(1, 8005).await;
+        let mut node2 = create_test_node(2, 8006).await;
         let node3 = create_test_node(3, 8007).await;
 
         let node3_addr = node3.node.lock().await.address;
@@ -568,9 +551,9 @@ mod kad_tests {
 
         sleep(Duration::from_secs(2)).await; // Allow time for replication
 
-        node1.stop(node1.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
-        node2.stop(node2.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
-        node3.stop(node3.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
+        node1.stop().await;
+        node2.stop().await;
+        node3.stop().await;
 
         println!("found_nodes: {:?}\nrouting_table: {:?}", found_nodes, node1.routing_table);
 
@@ -591,11 +574,11 @@ mod kad_tests {
 
         let index = rt.bucket_index(node.id);
 
-        kad.stop(kad.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
+        kad.stop().await;
 
         println!("rt: {:?}", rt);
 
-        assert!(rt.buckets().get(&index).unwrap().contains(node.id), "Node should be in the routing table");
+        assert!(rt.buckets().await.get(&index).unwrap().contains(node.id), "Node should be in the routing table");
     }
 
     #[tokio::test]
@@ -632,7 +615,7 @@ mod kad_tests {
         let orig;
         {
             let rt = kad.routing_table.lock().await;
-            orig = rt.buckets().get(&bucket_index).unwrap().clone();
+            orig = rt.buckets().await.get(&bucket_index).unwrap().clone();
         }
 
         // One extra node to force a ping
@@ -645,7 +628,7 @@ mod kad_tests {
         let mut new;
         {
             let rt = kad.routing_table.lock().await;
-            new = rt.buckets().get(&bucket_index).unwrap().clone();
+            new = rt.buckets().await.get(&bucket_index).unwrap().clone();
         }
 
         // Ensure that the original bucket is the same
@@ -653,14 +636,14 @@ mod kad_tests {
         println!("Routing Table After Overflow: {:?}", new);
         assert_eq!(new.nodes[DEFAULT_K - 1], test_info.clone(), "Bucket should have same nodes");
 
-        test.stop(test.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
+        test.stop().await;
 
         kad.add_node(&kad.socket, overflow_node.clone()).await;
 
         {
             let rt = kad.routing_table.lock().await;
-            new = rt.buckets().get(&bucket_index).unwrap().clone();
-            println!("Routing Table After Guaranteed LRU Removal: {:?}", rt.buckets().get(&bucket_index).unwrap());
+            new = rt.buckets().await.get(&bucket_index).unwrap().clone();
+            println!("Routing Table After Guaranteed LRU Removal: {:?}", rt.buckets().await.get(&bucket_index).unwrap());
         }
 
         // Ensure that the original bucket has new node
@@ -668,21 +651,21 @@ mod kad_tests {
         {
             let rt = kad.routing_table.lock().await;
             assert!(
-                rt.buckets().get(&bucket_index).unwrap().contains(overflow_node.id),
+                rt.buckets().await.get(&bucket_index).unwrap().contains(overflow_node.id),
                 "Overflow node should be in the bucket"
             );
         }
 
-        kad.stop(kad.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
+        kad.stop().await;
     }
 
     #[tokio::test]
     async fn test_iterative_find_value() {
         // Create multiple nodes and bind them to real sockets
-        let node1 = create_test_node(1, 8001).await;
-        let node2 = create_test_node(2, 8002).await;
-        let node3 = create_test_node(3, 8003).await;
-        let node4 = create_test_node(4, 8004).await;
+        let mut node1 = create_test_node(1, 8001).await;
+        let mut node2 = create_test_node(2, 8002).await;
+        let mut node3 = create_test_node(3, 8003).await;
+        let mut node4 = create_test_node(4, 8004).await;
 
         let node3_info = node3.node.lock().await.clone();
         let node1_info = node1.node.lock().await.clone();
@@ -701,10 +684,10 @@ mod kad_tests {
         // Attempt to retrieve the stored value from node4
         let value = node4.iterative_find_value(Arc::clone(&node4.socket), 2, 2).await;
 
-        node1.stop(node1.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
-        node2.stop(node2.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
-        node3.stop(node3.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
-        node4.stop(node4.receive_addr, SocketAddr::new("127.0.0.1".parse().unwrap(), 12000)).await;
+        node1.stop().await;
+        node2.stop().await;
+        node3.stop().await;
+        node4.stop().await;
 
         assert_eq!(value, Some("Hello, world!".to_string()), "Value should be found");
     }

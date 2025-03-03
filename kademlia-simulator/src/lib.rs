@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -15,28 +15,25 @@ pub struct SimulatedMessageHandler {}
 
 #[async_trait]
 impl KMessage for SimulatedMessageHandler {
-    fn create() -> Box<dyn KMessage> {
+    fn create(_channel_count: u8) -> Box<dyn KMessage> {
         Box::new(SimulatedMessageHandler {})
     }
 
+    async fn send_tx(&self, _addr: SocketAddr, _msg: MessageChannel) -> Result<(), MessageError> {
+        Ok(())
+    }
+
+    async fn send_no_recv(&self, socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+        todo!()
+    }
+
     // Send a message to another node
-    async fn send(
-        &self,
-        _socket: &UdpSocket,
-        target: &SocketAddr,
-        msg: &KademliaMessage
-    ) -> Result<(), MessageError> {
+    async fn send(&self, _socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
 
         Ok(())
     }
 
-    async fn recv(
-        &self,
-        _response_queue: Arc<Mutex<HashMap<u128, Vec<KademliaMessage>>>>,
-        _rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>,
-        _time: u64,
-        src: &SocketAddr
-    ) -> Result<KademliaMessage, MessageError> {
+    async fn recv(&self, _time: u64, _src: &SocketAddr) -> Result<KademliaMessage, MessageError> {
         let km = KademliaMessage::FindNode { id: 0, sender_id: 0 };
 
         Ok(km)
