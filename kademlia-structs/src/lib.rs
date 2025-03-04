@@ -11,9 +11,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{timeout, Duration};
 
 /// Custom error type for messaging operations.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MessageError {
-    IoError(std::io::Error),
+    IoError(String),
     NoRX,
     NoTX,
     TXDropped,
@@ -25,7 +25,7 @@ pub enum MessageError {
 
 impl From<std::io::Error> for MessageError {
     fn from(err: std::io::Error) -> Self {
-        MessageError::IoError(err)
+        MessageError::IoError(err.to_string())
     }
 }
 
@@ -123,8 +123,8 @@ impl KBucket {
 
 #[derive(Debug, Clone)]
 pub struct RoutingTable {
-    local_node: Node,
-    buckets: Arc<Mutex<HashMap<u8, KBucket>>>,
+    pub local_node: Node,
+    pub buckets: Arc<Mutex<HashMap<u8, KBucket>>>,
 }
 
 impl RoutingTable {
@@ -215,14 +215,13 @@ impl RoutingTable {
             }
 
             if let Some(lru_node) = bucket_clone.nodes.front().cloned() {
-                let ping_msg = KademliaMessage::FindNode {
-                    id: lru_node.id,
+                let ping_msg = KademliaMessage::Ping {
                     sender_id: local_node.id,
                 };
 
                 {
                     // If sending fails, log the error and continue.
-                    if let Err(e) = mh.send(&socket_clone, &lru_node.address, &ping_msg).await {
+                    if let Err(e) = mh.send(&socket_clone, Some(local_node.clone()), &lru_node.address, &ping_msg).await {
                         eprintln!("Failed to send ping to {}: {:?}", lru_node.address, e);
                         let mut locked_buckets = self_buckets.lock().await;
                         let bucket = locked_buckets.get_mut(&index).unwrap();
@@ -234,7 +233,7 @@ impl RoutingTable {
 
                 {
                     match mh.recv(300, &lru_node.address).await {
-                        Ok(KademliaMessage::Response { sender_id, .. }) if sender_id == lru_node.id => {
+                        Ok(KademliaMessage::Pong { sender_id, .. }) if sender_id == lru_node.id => {
                             let mut locked_buckets = self_buckets.lock().await;
                             let bucket = locked_buckets.get_mut(&index).unwrap();
                             bucket.update_node(lru_node);
@@ -264,12 +263,11 @@ impl RoutingTable {
         let mut locked_buckets = self.buckets.lock().await;
         let bucket = locked_buckets.get_mut(&index).unwrap();
         if let Some(lru_node) = bucket.nodes.front().cloned() {
-            let ping_msg = KademliaMessage::FindNode {
-                id: lru_node.id,
+            let ping_msg = KademliaMessage::Ping {
                 sender_id: self.local_node.id,
             };
 
-            if let Err(e) = message_handler.send(socket, &lru_node.address, &ping_msg).await {
+            if let Err(e) = message_handler.send(socket, Some(self.local_node.clone()), &lru_node.address, &ping_msg).await {
                 eprintln!("Failed to send ping to {}: {:?}", lru_node.address, e);
                 bucket.remove(&lru_node);
                 bucket.insert(node);
@@ -277,7 +275,7 @@ impl RoutingTable {
             }
 
             match message_handler.recv(300, &lru_node.address).await {
-                Ok(KademliaMessage::Response { sender_id, .. }) if sender_id == lru_node.id => {
+                Ok(KademliaMessage::Pong { sender_id, .. }) if sender_id == lru_node.id => {
                     bucket.update_node(lru_node);
                 }
                 Ok(_) | Err(_) => {
@@ -359,8 +357,8 @@ pub struct MessageChannel {
 pub trait KMessage: Send + Sync {
     fn create(channel_count: u8) -> Box<dyn KMessage> where Self: Sized;
     async fn send_tx(&self, addr: SocketAddr, msg: MessageChannel) -> Result<(), MessageError>;
-    async fn send_no_recv(&self, socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
-    async fn send(&self, socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
+    async fn send_no_recv(&self, socket: &UdpSocket, node: Option<Node>, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
+    async fn send(&self, socket: &UdpSocket, node: Option<Node>, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
     async fn recv(&self, timeout_ms: u64, src: &SocketAddr) -> Result<KademliaMessage, MessageError>;
     fn clone_box(&self) -> Box<dyn KMessage>;
 }
@@ -444,7 +442,7 @@ impl KMessage for MessageHandler {
         }
     }
 
-    async fn send_no_recv(&self, socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send_no_recv(&self, socket: &UdpSocket, _node: Option<Node>, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
         // Now actually send the UDP message
         let bytes = serde_json::to_vec(msg)
             .map_err(|e| MessageError::SerializationError(e.to_string()))?;
@@ -453,7 +451,7 @@ impl KMessage for MessageHandler {
     }
 
     /// Takes an RX/TX from the “available” pool, assigns it to the `target`, and sends the given message.
-    async fn send(&self, socket: &UdpSocket, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send(&self, socket: &UdpSocket, _node: Option<Node>, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
         let mut need_rx = true;
 
         // Try once outside the loop
@@ -585,6 +583,12 @@ pub enum KademliaMessage {
         value: Option<String>,
         sender_id: u128,
     },
+    Ping {
+        sender_id: u128,
+    },
+    Pong {
+        sender_id: u128,
+    },
     Stop {},
 }
 
@@ -595,6 +599,8 @@ impl KademliaMessage {
             KademliaMessage::Store { sender_id, .. } => *sender_id,
             KademliaMessage::FindValue { sender_id, .. } => *sender_id,
             KademliaMessage::Response { sender_id, .. } => *sender_id,
+            KademliaMessage::Ping {sender_id} => *sender_id,
+            KademliaMessage::Pong { sender_id, .. } => *sender_id,
             KademliaMessage::Stop {} => 0,
         }
     }

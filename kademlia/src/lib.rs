@@ -38,6 +38,21 @@ impl Kademlia {
         }
     }
 
+    pub async fn new_with_sock(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn KMessage>, socket: Arc<UdpSocket>) -> Self {
+        let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
+
+        Self {
+            node: Arc::new(Mutex::new(node)),
+            socket: Arc::clone(&socket),
+            receive_addr: format!("{address}:{port}").parse().unwrap(),
+            message_handler: Arc::new(msg_handler),
+            routing_table: Arc::new(Mutex::new(rt)),
+            data_store: Arc::new(Mutex::new(HashMap::new())),
+            stop_signal: Arc::new(AtomicBool::new(false)),
+            join_handle: Arc::new(None),
+        }
+    }
+
     pub async fn set_node(&self, node: &mut Node) {
         self.node.lock().await.update(node);
     }
@@ -121,7 +136,7 @@ impl Kademlia {
                                 //println!("Responding to message with {:?}", response);
                             }
 
-                            if let Err(e) = message_handler.send_no_recv(&socket, &src, &response).await {
+                            if let Err(e) = message_handler.send_no_recv(&socket, None, &src, &response).await {
                                 eprintln!("Failed to send response to {}: {:?}", src, e);
                             }
                         }
@@ -155,7 +170,7 @@ impl Kademlia {
                                 }
                             };
 
-                            if let Err(e) = message_handler.send_no_recv(&socket, &src, &response).await {
+                            if let Err(e) = message_handler.send_no_recv(&socket, None, &src, &response).await {
                                 eprintln!("Failed to send response to {}: {:?}", src, e);
                             }
                         }
@@ -182,26 +197,29 @@ impl Kademlia {
                                     eprintln!("Failed to send TX for message from {}: {:?}", src, e);
                                 }
                             }
-                            /*if let Some(tx_info) = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: constructed }).await {
-                                let tx = tx_info.tx.lock().await;
-                                let info = tx.send(MessageChannel { node_id: sender_node.id, msg: constructed });
-                                if info.is_err() {
-                                    if tx.is_closed() {
-                                        println!("Receiver dropped");
-                                    }
-                                    eprintln!("Error sending message to channel {:?}", info.err().unwrap());
-                                }
-                                if cfg!(debug_assertions) {
-                                    println!("Message sent successfully");
-                                }
-                            } else {
-                                eprintln!("No tx found for response message from {}", sender_node.address);
-                            }*/
+                        }
 
+                        KademliaMessage::Ping { .. } => {
+                            if let Err(e) = message_handler.send_no_recv(&socket, None, &src, &KademliaMessage::Pong { sender_id: self_ref.id }).await {
+                                eprintln!("Failed to send response to {}: {:?}", src, e);
+                            }
+                        }
+
+                        KademliaMessage::Pong { sender_id, .. } => {
+                            let tx_info = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: KademliaMessage::Pong { sender_id } }).await;
+
+                            match tx_info {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!("Failed to send TX for message from {}: {:?}", src, e);
+                                }
+                            }
                         }
 
                         KademliaMessage::Stop {} => {
-                            break;
+                            if sender_node.address == self_ref.address {
+                                break;
+                            }
                         }
                     }
                 }
@@ -249,6 +267,7 @@ impl Kademlia {
                 let node_clone = node.clone();
                 let mut message_handler = Arc::clone(&self.message_handler);
                 let self_id = self_node.id.clone();
+                let self_thread_node = self_node.clone();
 
                 self.add_node(&socket_clone, node_clone.clone()).await;
 
@@ -260,7 +279,7 @@ impl Kademlia {
                     };
 
                     {
-                        if let Err(e) = message_handler.send(&socket_clone, &node_clone.address, &message).await {
+                        if let Err(e) = message_handler.send(&socket_clone, Some(self_thread_node), &node_clone.address, &message).await {
                             eprintln!("Failed to send FindNode to {}: {:?}", node_clone.address, e);
                         }
                     }
@@ -360,6 +379,7 @@ impl Kademlia {
                 let node_clone = node.clone();
                 let mut message_handler = Arc::clone(&self.message_handler);
                 let self_id = self_node.id;
+                let self_thread_node = self_node.clone();
 
                 self.add_node(&socket_clone, node_clone.clone()).await;
 
@@ -371,7 +391,7 @@ impl Kademlia {
                     };
 
                     {
-                        if let Err(e) = message_handler.send(&socket_clone, &node_clone.address, &message).await {
+                        if let Err(e) = message_handler.send(&socket_clone, Some(self_thread_node), &node_clone.address, &message).await {
                             eprintln!("Failed to send FindValue to {}: {:?}", node_clone.address, e);
                         }
                     }
@@ -461,7 +481,7 @@ impl Kademlia {
 
             // Send STORE message
             {
-                if let Err(e) = self.message_handler.send_no_recv(&socket, &node.address, &store_message).await {
+                if let Err(e) = self.message_handler.send_no_recv(&socket, Some(self_node.clone()), &node.address, &store_message).await {
                     eprintln!("Failed to send Store to {}: {:?}", node.address, e);
                 }
             }
@@ -488,7 +508,7 @@ impl Kademlia {
         };
 
         {
-            if let Err(e) = self.message_handler.send(&socket, &target, &message).await {
+            if let Err(e) = self.message_handler.send(&socket, Some(self_node.clone()), &target, &message).await {
                 eprintln!("Failed to send FindNode to {}: {:?}", target, e);
             }
         }
