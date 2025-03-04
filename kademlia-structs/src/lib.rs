@@ -20,6 +20,7 @@ pub enum MessageError {
     TXSendError,
     Timeout,
     MissingResponse,
+    MissingNode,
     SerializationError(String),
 }
 
@@ -57,6 +58,8 @@ impl PartialEq for HeapNode {
 
 pub const DEFAULT_K: usize = 20;
 pub const MAX_K: usize = 40;
+
+pub const LOOKUP_ALPHA: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Node {
@@ -121,6 +124,7 @@ impl KBucket {
     }
 }
 
+// TODO: Implement last_seen information for nodes in routing table
 #[derive(Debug, Clone)]
 pub struct RoutingTable {
     pub local_node: Node,
@@ -178,7 +182,7 @@ impl RoutingTable {
             .insert(node);
     }
 
-    async fn check_and_update_bucket(&mut self, node: Node, index: u8) -> bool {
+    pub async fn check_and_update_bucket(&mut self, node: Node, index: u8) -> bool {
         let mut self_buckets = self.buckets.lock().await;
         if let Some(bucket) = self_buckets.get_mut(&index) {
             if !bucket.is_full() {
@@ -216,12 +220,12 @@ impl RoutingTable {
 
             if let Some(lru_node) = bucket_clone.nodes.front().cloned() {
                 let ping_msg = KademliaMessage::Ping {
-                    sender_id: local_node.id,
+                    sender: local_node.clone(),
                 };
 
                 {
                     // If sending fails, log the error and continue.
-                    if let Err(e) = mh.send(&socket_clone, Some(local_node.clone()), &lru_node.address, &ping_msg).await {
+                    if let Err(e) = mh.send(&socket_clone, local_node.clone(), &lru_node.address, &ping_msg).await {
                         eprintln!("Failed to send ping to {}: {:?}", lru_node.address, e);
                         let mut locked_buckets = self_buckets.lock().await;
                         let bucket = locked_buckets.get_mut(&index).unwrap();
@@ -233,7 +237,7 @@ impl RoutingTable {
 
                 {
                     match mh.recv(300, &lru_node.address).await {
-                        Ok(KademliaMessage::Pong { sender_id, .. }) if sender_id == lru_node.id => {
+                        Ok(KademliaMessage::Pong { sender, .. }) if sender.id == lru_node.id => {
                             let mut locked_buckets = self_buckets.lock().await;
                             let bucket = locked_buckets.get_mut(&index).unwrap();
                             bucket.update_node(lru_node);
@@ -250,7 +254,7 @@ impl RoutingTable {
         });
     }
 
-    pub async fn add_node(&mut self, mut message_handler: Arc<Box<dyn KMessage>>, node: Node, socket: &UdpSocket) {
+    pub async fn add_node(&mut self, message_handler: Arc<Box<dyn KMessage>>, node: Node, socket: &UdpSocket) {
         if self.local_node.id == node.id {
             return;
         }
@@ -264,10 +268,10 @@ impl RoutingTable {
         let bucket = locked_buckets.get_mut(&index).unwrap();
         if let Some(lru_node) = bucket.nodes.front().cloned() {
             let ping_msg = KademliaMessage::Ping {
-                sender_id: self.local_node.id,
+                sender: self.local_node.clone(),
             };
 
-            if let Err(e) = message_handler.send(socket, Some(self.local_node.clone()), &lru_node.address, &ping_msg).await {
+            if let Err(e) = message_handler.send(socket, self.local_node.clone(), &lru_node.address, &ping_msg).await {
                 eprintln!("Failed to send ping to {}: {:?}", lru_node.address, e);
                 bucket.remove(&lru_node);
                 bucket.insert(node);
@@ -275,7 +279,7 @@ impl RoutingTable {
             }
 
             match message_handler.recv(300, &lru_node.address).await {
-                Ok(KademliaMessage::Pong { sender_id, .. }) if sender_id == lru_node.id => {
+                Ok(KademliaMessage::Pong { sender, .. }) if sender.id == lru_node.id => {
                     bucket.update_node(lru_node);
                 }
                 Ok(_) | Err(_) => {
@@ -307,7 +311,6 @@ impl RoutingTable {
 
         while searched < bucket_indices.len() {
             if left >= 0 {
-
                 if let Some(bucket) = self_buckets.get(&bucket_indices[left as usize]) {
                     for node in &bucket.nodes {
                         heap.push(HeapNode {
@@ -344,6 +347,41 @@ impl RoutingTable {
 
         heap.into_sorted_vec().into_iter().map(|hn| hn.node).collect()
     }
+
+    pub async fn to_string(&self) -> String {
+        let mut last: String = "ROUTING TABLE {\n".to_string();
+
+        let mut bucket_strings = HashMap::new();
+        let mut bucket_ids = vec![];
+        for bucket in self.buckets.lock().await.iter() {
+            let mut temp: String = "".to_string();
+            temp.push_str("\t{\n");
+            temp.push_str(format!("\t\tID: {},\n\t\tCOUNT: {},\n", bucket.0, bucket.1.nodes.len()).as_str());
+            temp.push_str("\t\t{\n");
+            temp.push_str("\t\t\t");
+
+            for node in bucket.1.nodes.clone() {
+                temp.push_str("{ ");
+                temp.push_str(format!("id: {}, address: {}", node.id, node.address).as_str());
+                temp.push_str(" }, ");
+            }
+
+            temp.push_str("\n\t\t},\n");
+            temp.push_str("\t},\n");
+
+            bucket_strings.insert(bucket.0.clone(), temp.clone());
+            bucket_ids.push(bucket.0.clone());
+        }
+        bucket_ids.sort();
+
+        for bucket_id in bucket_ids {
+            last.push_str(bucket_strings.get(&bucket_id).unwrap().as_str());
+        }
+
+        last.push_str("}");
+
+        last
+    }
 }
 
 /// A simple channel message that carries identifying information.
@@ -357,8 +395,8 @@ pub struct MessageChannel {
 pub trait KMessage: Send + Sync {
     fn create(channel_count: u8) -> Box<dyn KMessage> where Self: Sized;
     async fn send_tx(&self, addr: SocketAddr, msg: MessageChannel) -> Result<(), MessageError>;
-    async fn send_no_recv(&self, socket: &UdpSocket, node: Option<Node>, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
-    async fn send(&self, socket: &UdpSocket, node: Option<Node>, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
+    async fn send_no_recv(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
+    async fn send(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
     async fn recv(&self, timeout_ms: u64, src: &SocketAddr) -> Result<KademliaMessage, MessageError>;
     fn clone_box(&self) -> Box<dyn KMessage>;
 }
@@ -442,7 +480,7 @@ impl KMessage for MessageHandler {
         }
     }
 
-    async fn send_no_recv(&self, socket: &UdpSocket, _node: Option<Node>, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send_no_recv(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
         // Now actually send the UDP message
         let bytes = serde_json::to_vec(msg)
             .map_err(|e| MessageError::SerializationError(e.to_string()))?;
@@ -451,7 +489,7 @@ impl KMessage for MessageHandler {
     }
 
     /// Takes an RX/TX from the “available” pool, assigns it to the `target`, and sends the given message.
-    async fn send(&self, socket: &UdpSocket, _node: Option<Node>, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
         let mut need_rx = true;
 
         // Try once outside the loop
@@ -575,33 +613,37 @@ impl KMessage for MessageHandler {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum KademliaMessage {
-    FindNode { id: u128, sender_id: u128 },
-    Store { key: u128, value: String, sender_id: u128 },
-    FindValue { key: u128, sender_id: u128 },
-    Response {
-        nodes: Vec<Node>,
-        value: Option<String>,
-        sender_id: u128,
-    },
-    Ping {
-        sender_id: u128,
-    },
-    Pong {
-        sender_id: u128,
-    },
-    Stop {},
+    FindNode { id: u128, sender: Node },
+    Store { key: u128, value: String, sender: Node },
+    FindValue { key: u128, sender: Node },
+    Response { nodes: Vec<Node>, value: Option<String>, sender: Node },
+    Ping { sender: Node },
+    Pong { sender: Node },
+    Stop { }
 }
 
 impl KademliaMessage {
     pub fn sender_id(&self) -> u128 {
         match self {
-            KademliaMessage::FindNode { sender_id, .. } => *sender_id,
-            KademliaMessage::Store { sender_id, .. } => *sender_id,
-            KademliaMessage::FindValue { sender_id, .. } => *sender_id,
-            KademliaMessage::Response { sender_id, .. } => *sender_id,
-            KademliaMessage::Ping {sender_id} => *sender_id,
-            KademliaMessage::Pong { sender_id, .. } => *sender_id,
+            KademliaMessage::FindNode { sender, .. } => sender.id.clone(),
+            KademliaMessage::Store { sender, .. } => sender.id.clone(),
+            KademliaMessage::FindValue { sender, .. } => sender.id.clone(),
+            KademliaMessage::Response { sender, .. } => sender.id.clone(),
+            KademliaMessage::Ping {sender} => sender.id.clone(),
+            KademliaMessage::Pong { sender, .. } => sender.id.clone(),
             KademliaMessage::Stop {} => 0,
+        }
+    }
+
+    pub fn sender(&self) -> Option<Node> {
+        match self {
+            KademliaMessage::FindNode { sender, .. } => Some(sender.clone()),
+            KademliaMessage::Store { sender, .. } => Some(sender.clone()),
+            KademliaMessage::FindValue { sender, .. } => Some(sender.clone()),
+            KademliaMessage::Response { sender, .. } => Some(sender.clone()),
+            KademliaMessage::Ping {sender} => Some(sender.clone()),
+            KademliaMessage::Pong { sender, .. } => Some(sender.clone()),
+            KademliaMessage::Stop {} => None,
         }
     }
 }
