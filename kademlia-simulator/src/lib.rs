@@ -82,16 +82,21 @@ impl RoutingTableInfo {
         }
     }
 
+    pub fn from(routing_table: Arc<Mutex<RoutingTable>>) -> RoutingTableInfo {
+        RoutingTableInfo {
+            routing_table
+        }
+    }
+
     pub fn set(&mut self, routing_table: Arc<Mutex<RoutingTable>>) {
         self.routing_table = routing_table;
     }
 }
 
-
 lazy_static! {
     static ref SIM: Arc<Mutex<Simulator>> = Arc::new(Mutex::new(Simulator::new_empty()));
-    static ref RUNNING_NODE: Arc<Mutex<Node>> = Arc::new(Mutex::new( Node { id: 0, address: "127.0.0.1:0".parse().unwrap() } ));
-    static ref RUNNING_ROUTING_TABLE: Arc<Mutex<RoutingTableInfo>> = Arc::new(Mutex::new(RoutingTableInfo::new()));
+    static ref RUNNING_NODES: Arc<Mutex<HashSet<Node>>> = Arc::new(Mutex::new(HashSet::new()));
+    static ref RUNNING_ROUTING_TABLES: Arc<Mutex<HashMap<Node, RoutingTableInfo>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 // A global cell that can store our socket once
@@ -302,7 +307,7 @@ impl KMessage for SimulatedMessageHandler {
         Ok(())
     }
 
-    async fn send_no_recv(&self, _socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send_no_recv(&self, _socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
         let check_node;
         {
             check_node = SIM.lock().await.nodes.get_mut(target).cloned();
@@ -310,11 +315,7 @@ impl KMessage for SimulatedMessageHandler {
 
         match check_node {
             Some(node) => {
-                let self_node;
-                {
-                    self_node = RUNNING_NODE.lock().await.clone();
-                }
-                let _ = node.lock().await.parse_message(self_node, msg.clone()).await;
+                let _ = node.lock().await.parse_message(from_node, msg.clone()).await;
             }
             None => {}
         }
@@ -324,11 +325,6 @@ impl KMessage for SimulatedMessageHandler {
 
     // Send a message to another node
     async fn send(&self, _socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
-        let self_node;
-        {
-            self_node = RUNNING_NODE.lock().await.clone();
-        }
-
         //println!("Send {:?} to {} from {}", msg, target, self_node.clone().address);
         let check_node;
         {
@@ -344,7 +340,7 @@ impl KMessage for SimulatedMessageHandler {
                     self_messages.insert(target.clone(), VecDeque::new());
                 }
 
-                let response = node_locked.parse_message(self_node, msg.clone()).await;
+                let response = node_locked.parse_message(from_node.clone(), msg.clone()).await;
 
                 let messages = self_messages.get_mut(&target.clone());
                 if let Some(msg_handler) = messages {
@@ -353,16 +349,15 @@ impl KMessage for SimulatedMessageHandler {
 
                 match response {
                     Ok(km) => {
-                        let self_node;
+                        let is_running;
                         {
-                            self_node = RUNNING_NODE.lock().await.clone();
+                            is_running = RUNNING_ROUTING_TABLES.lock().await.contains_key(&from_node);
                         }
-
-                        if from_node.id == self_node.id {
+                        if is_running {
                             match km.sender() {
                                 Some(sender) => {
-                                    let running_table = RUNNING_ROUTING_TABLE.lock().await;
-                                    let mut rt = running_table.routing_table.lock().await;
+                                    let mut running_table = RUNNING_ROUTING_TABLES.lock().await;
+                                    let mut rt = running_table.get_mut(&from_node).unwrap().routing_table.lock().await;
                                     let index = rt.bucket_index(sender.clone().id);
                                     if !rt.check_and_update_bucket(sender.clone(), index).await {
                                         let mut locked_buckets = rt.buckets.lock().await;
@@ -481,6 +476,20 @@ pub async fn save_simulated_nodes(file_path: &str, nodes: &Vec<SimulatedNode>) -
     Ok(())
 }
 
+async fn add_running(node: Node, routing_table: Arc<Mutex<RoutingTable>>) {
+    {
+        RUNNING_NODES.lock().await.insert(node.clone());
+        RUNNING_ROUTING_TABLES.lock().await.insert(node, RoutingTableInfo::from(routing_table));
+    }
+}
+
+async fn remove_running(node: Node) {
+    {
+        RUNNING_NODES.lock().await.remove(&node);
+        RUNNING_ROUTING_TABLES.lock().await.remove(&node);
+    }
+}
+
 pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
     let mut addresses = vec![];
     let nodes_len = nodes.len();
@@ -509,10 +518,7 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
 
         let mut run_node = Kademlia::new_with_sock(node.node.id, "127.0.0.1", node.node.address.port(), RoutingTable::new(node.node.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
 
-        {
-            RUNNING_NODE.lock().await.update(&node.node.clone());
-            RUNNING_ROUTING_TABLE.lock().await.set(Arc::clone(&run_node.routing_table));
-        }
+        add_running(node.node.clone(), Arc::clone(&run_node.routing_table)).await;
 
         let ind;
         if index ^ (range * 2) == 0 {
@@ -534,6 +540,8 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
                 data_store: run_node.data_store.lock().await.clone()
             }).await;
         }
+
+        remove_running(node.node.clone()).await;
 
         usable_addresses.push(node.node.address);
 
@@ -589,17 +597,14 @@ mod sim_tests {
     use rand::seq::IndexedRandom;
     use kademlia::Kademlia;
     use kademlia_structs::{KMessage, RoutingTable, Node};
-    use crate::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, RUNNING_NODE, SIM, RUNNING_ROUTING_TABLE};
+    use crate::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, SIM, add_running, remove_running};
 
     async fn create_test_node(id: u128, port: u16) -> Kademlia {
         let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
 
         let mut node = Kademlia::new_with_sock(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
 
-        {
-            RUNNING_NODE.lock().await.update(&node_actual.clone());
-            RUNNING_ROUTING_TABLE.lock().await.set(Arc::clone(&node.routing_table));
-        }
+        add_running(node_actual.clone(), Arc::clone(&node.routing_table)).await;
 
         node
     }
@@ -607,7 +612,7 @@ mod sim_tests {
     #[tokio::test]
     async fn simulated_node_find_test() {
         crate::init_socket_once().await;
-        let file_path = "../test_nodes.json";
+        let file_path = "../simulated_nodes_10000.json";
 
         // Load nodes from JSON
         match load_simulated_nodes(file_path).await {
@@ -665,6 +670,8 @@ mod sim_tests {
                     println!("ROUTING TABLE:\n{}", node1.routing_table.lock().await.to_string().await);
                 }
 
+                remove_running(node1.node.lock().await.clone()).await;
+
                 assert_eq!(found_nodes_selected[0], node_selected.node, "Should find selected, and it should be first in the list");
                 assert_eq!(found_nodes_random[0], node_random.node, "Should find random node, and it should be first in the list");
 
@@ -690,35 +697,41 @@ mod sim_tests {
                 }
 
                 let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
+                let mut node2 = create_test_node(rand::random::<u128>(), 6001).await;
+
                 {
                     println!("NODE1:\nID: {}", node1.node.lock().await.id);
+                    println!("NODE2:\nID: {}", node2.node.lock().await.id);
                 }
+
                 let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
+                let test_node_sock2 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
+
                 println!("NODE1 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock1.clone().port());
+                println!("NODE2 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock2.clone().port());
+
                 node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
                 println!("Node1 Joined Network");
+                node2.join_network(get_global_socket().unwrap().clone(), &test_node_sock2).await;
+                println!("Node2 Joined Network");
 
                 let key = rand::random::<u128>();
                 let value = "PLEASE DEAR GOD LET THIS WORK".to_string();
                 println!("STORE:\nKey: {}, Value: {}", key, value);
+
                 // Perform store
                 let store_nodes = node1.store_value(Arc::clone(&node1.socket), key, value.clone()).await;
                 println!("Send Store");
                 assert_eq!(store_nodes.len(), 2, "Should have stored in 2 nodes");
 
-                let mut node2 = create_test_node(rand::random::<u128>(), 6001).await;
-                {
-                    println!("NODE2:\nID: {}", node2.node.lock().await.id);
-                }
-                let test_node_sock2 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
-                println!("NODE2 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock2.clone().port());
-                node2.join_network(get_global_socket().unwrap().clone(), &test_node_sock2).await;
-                println!("Node2 Joined Network");
-
+                // Perform search
                 let found_value_option = node2.iterative_find_value(Arc::clone(&node2.socket), key).await;
                 println!("Search Value");
                 assert!(found_value_option.is_some(), "Did not find value");
                 let found_value = found_value_option.unwrap();
+
+                remove_running(node1.node.lock().await.clone()).await;
+                remove_running(node2.node.lock().await.clone()).await;
 
                 assert_eq!(found_value, value, "Should find value and it should be the correct one.");
 
