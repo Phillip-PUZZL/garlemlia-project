@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -128,7 +128,7 @@ impl KBucket {
 #[derive(Debug, Clone)]
 pub struct RoutingTable {
     pub local_node: Node,
-    pub buckets: Arc<Mutex<HashMap<u8, KBucket>>>,
+    pub buckets: Arc<Mutex<HashMap<u8, KBucket>>>
 }
 
 impl RoutingTable {
@@ -160,7 +160,12 @@ impl RoutingTable {
 
     pub fn bucket_index(&self, node_id: u128) -> u8 {
         let xor_distance = self.local_node.id ^ node_id;
-        (128 - xor_distance.leading_zeros()) as u8
+
+        if xor_distance == 0 {
+            return 0;
+        }
+
+        (127 - xor_distance.leading_zeros()) as u8
     }
 
     pub async fn flat_nodes(&self) -> Vec<Node> {
@@ -185,9 +190,14 @@ impl RoutingTable {
     pub async fn check_and_update_bucket(&mut self, node: Node, index: u8) -> bool {
         let mut self_buckets = self.buckets.lock().await;
         if let Some(bucket) = self_buckets.get_mut(&index) {
-            if !bucket.is_full() {
+            if bucket.contains(node.clone().id) {
                 bucket.update_node(node);
                 return true;
+            } else {
+                if !bucket.is_full() {
+                    bucket.insert(node);
+                    return true;
+                }
             }
             false
         } else {
@@ -291,61 +301,55 @@ impl RoutingTable {
     }
 
     pub async fn find_closest_nodes(&self, target_id: u128, count: usize) -> Vec<Node> {
-        let mut heap = BinaryHeap::new();
-        heap.push(HeapNode {
-            distance: target_id ^ self.local_node.id,
-            node: self.local_node.clone(),
-        });
+        // Always include self
+        let mut candidates = vec![self.local_node.clone()];
 
-        let self_buckets = self.buckets.lock().await;
-
-        let mut bucket_indices: Vec<u8> = self_buckets.keys().cloned().collect();
+        // Lock the buckets and extract a sorted list of bucket indices.
+        let buckets = self.buckets.lock().await;
+        let mut bucket_indices: Vec<u8> = buckets.keys().cloned().collect();
         bucket_indices.sort();
-        let start_index = self.bucket_index(target_id);
-        let closest_index_pos = bucket_indices
-            .binary_search(&start_index)
-            .unwrap_or_else(|pos| pos.min(bucket_indices.len().saturating_sub(1)));
-        let mut left = closest_index_pos as isize;
-        let mut right = closest_index_pos as isize + 1;
-        let mut searched = 0;
 
-        while searched < bucket_indices.len() {
-            if left >= 0 {
-                if let Some(bucket) = self_buckets.get(&bucket_indices[left as usize]) {
-                    for node in &bucket.nodes {
-                        heap.push(HeapNode {
-                            distance: target_id ^ node.id,
-                            node: node.clone(),
-                        });
-                        if heap.len() > count {
-                            heap.pop();
-                        }
-                    }
-                    searched += 1;
-                }
-                left -= 1;
-            }
+        // Determine the bucket index for the target.
+        let target_bucket = self.bucket_index(target_id);
+
+        // Find the position in the sorted bucket list.
+        // If no bucket has an index >= target_bucket, start with the last one.
+        let mut pos = bucket_indices
+            .iter()
+            .position(|&i| i >= target_bucket)
+            .unwrap_or(bucket_indices.len().saturating_sub(1));
+
+        // Add nodes from the bucket that contains the target (if it exists)
+        if let Some(bucket) = buckets.get(&bucket_indices[pos]) {
+            candidates.extend(bucket.nodes.iter().cloned());
+        }
+
+        // Expand outwards from the target bucket.
+        let mut left: isize = pos as isize - 1;
+        let mut right: isize = pos as isize + 1;
+
+        while candidates.len() < count && (left >= 0 || (right as usize) < bucket_indices.len()) {
             if right < bucket_indices.len() as isize {
-                if let Some(bucket) = self_buckets.get(&bucket_indices[right as usize]) {
-                    for node in &bucket.nodes {
-                        heap.push(HeapNode {
-                            distance: target_id ^ node.id,
-                            node: node.clone(),
-                        });
-                        if heap.len() > count {
-                            heap.pop();
-                        }
-                    }
-                    searched += 1;
+                if let Some(bucket) = buckets.get(&bucket_indices[right as usize]) {
+                    candidates.extend(bucket.nodes.iter().cloned());
                 }
                 right += 1;
             }
-            if heap.len() >= count && searched > 3 {
+            if candidates.len() >= count {
                 break;
+            }
+            if left >= 0 {
+                if let Some(bucket) = buckets.get(&bucket_indices[left as usize]) {
+                    candidates.extend(bucket.nodes.iter().cloned());
+                }
+                left -= 1;
             }
         }
 
-        heap.into_sorted_vec().into_iter().map(|hn| hn.node).collect()
+        // Sort the gathered nodes by XOR distance to target_id.
+        candidates.sort_by_key(|node| node.id ^ target_id);
+        candidates.truncate(count);
+        candidates
     }
 
     pub async fn to_string(&self) -> String {
@@ -381,6 +385,43 @@ impl RoutingTable {
         last.push_str("}");
 
         last
+    }
+
+    pub fn random_id_for_bucket(self_id: u128, bucket_index: u8) -> u128 {
+        // The bit we want to differ at (counting from the left,
+        // where 0 = top bit, 127 = bottom bit):
+        let bit_pos = 127 - bucket_index;
+
+        // 1. Flip that bit from self_id.
+        //    We'll construct a mask that has only that bit set:
+        let flip_mask = 1u128 << bit_pos;
+        let mut candidate = self_id ^ flip_mask;
+
+        // 2. Now randomize all the bits below `bit_pos`.
+        //    That means the `bit_pos` least significant bits can be anything.
+        //    We can generate a random 128-bit number, but then zero out
+        //    all bits except the lower `bit_pos`.
+        //
+        //    If bit_pos is 0, that means we only flipped the top bit
+        //    and there's no "lower bits" to randomize, so handle that case:
+        if bit_pos > 0 {
+            // e.g. for bit_pos=5, we want to keep only bits [0..4].
+            let mask_below = (1u128 << bit_pos) - 1;  // e.g. (1 << 5) - 1 = 0b11111
+
+            // A random u128 from the standard RNG:
+            let random_lower: u128 = rand::random::<u128>();
+
+            // Keep only the lower bit_pos bits:
+            let random_bits = random_lower & mask_below;
+
+            // Combine these random bits into candidate:
+            // First, zero out the bits below bit_pos (they might already be zero, but let's be explicit)
+            candidate &= !mask_below;  // not strictly needed since we already matched above bit
+            // Then OR in the random bits
+            candidate |= random_bits;
+        }
+
+        candidate
     }
 }
 

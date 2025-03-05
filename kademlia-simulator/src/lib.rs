@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use kademlia_structs::{KMessage, KademliaMessage, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
+use kademlia_structs::{KBucket, KMessage, KademliaMessage, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -7,6 +7,7 @@ use std::sync::Arc;
 use lazy_static::lazy_static;
 use once_cell::sync::OnceCell;
 use rand::prelude::IndexedRandom;
+use rand::Rng;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
@@ -58,7 +59,7 @@ impl Simulator {
     }
 
     pub fn node_is_alive(&self, _address: SocketAddr) -> bool {
-        true
+        rand::random_bool(0.8)
     }
 
     pub fn add_fail(&mut self) {
@@ -116,10 +117,32 @@ pub fn get_global_socket() -> Option<Arc<UdpSocket>> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableRoutingTable {
+    pub local_node: Node,
+    pub buckets: HashMap<u8, KBucket>
+}
+
+impl SerializableRoutingTable {
+    pub async fn from(routing_table: RoutingTable) -> SerializableRoutingTable {
+        SerializableRoutingTable {
+            local_node: routing_table.local_node,
+            buckets: routing_table.buckets.lock().await.clone(),
+        }
+    }
+
+    pub fn to_routing_table(self) -> RoutingTable {
+        RoutingTable {
+            local_node: self.local_node,
+            buckets: Arc::new(Mutex::new(self.buckets))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
     pub id: u128,
     pub address: String,
-    pub routing_table: Vec<Node>,
+    pub routing_table: SerializableRoutingTable,
     pub data_store: HashMap<u128, String>
 }
 
@@ -158,7 +181,7 @@ impl SimulatedNode {
             let mut locked_buckets = rt.buckets.lock().await;
             let bucket = locked_buckets.get_mut(&index).unwrap();
             if let Some(lru_node) = bucket.nodes.front().cloned() {
-                if SIM.lock().await.node_is_alive(node.address) {
+                if SIM.lock().await.node_is_alive(lru_node.address) {
                     bucket.update_node(lru_node);
                 } else {
                     bucket.remove(&lru_node);
@@ -339,12 +362,20 @@ impl KMessage for SimulatedMessageHandler {
                             match km.sender() {
                                 Some(sender) => {
                                     let running_table = RUNNING_ROUTING_TABLE.lock().await;
-                                    running_table.routing_table.lock().await.add_node(Arc::new(SimulatedMessageHandler::create(0)), sender, &*get_global_socket().unwrap().clone()).await;
-                                    /*let channels = RUNNING_CHANNELS.lock().await;
-                                    let tx = channels.tx.clone();
-                                    tx.send(sender).unwrap();
-                                    let mut rx = channels.rx.lock().await;
-                                    rx.recv().await;*/
+                                    let mut rt = running_table.routing_table.lock().await;
+                                    let index = rt.bucket_index(sender.clone().id);
+                                    if !rt.check_and_update_bucket(sender.clone(), index).await {
+                                        let mut locked_buckets = rt.buckets.lock().await;
+                                        let bucket = locked_buckets.get_mut(&index).unwrap();
+                                        if let Some(lru_node) = bucket.nodes.front().cloned() {
+                                            if SIM.lock().await.node_is_alive(lru_node.address) {
+                                                bucket.update_node(lru_node);
+                                            } else {
+                                                bucket.remove(&lru_node);
+                                                bucket.insert(sender);
+                                            }
+                                        }
+                                    }
                                 }
                                 None => {}
                             }
@@ -412,20 +443,14 @@ impl KMessage for SimulatedMessageHandler {
 }
 
 async fn file_node_to_simulated(file_node: FileNode) -> SimulatedNode {
-    let mut rt = RoutingTable::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() });
-
-    for node in file_node.routing_table {
-        rt.insert_direct(node).await;
-    }
-
-    SimulatedNode::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() }, rt, file_node.data_store)
+    SimulatedNode::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() }, file_node.routing_table.to_routing_table(), file_node.data_store)
 }
 
 async fn simulated_node_to_file(sim_node: SimulatedNode) -> FileNode {
     FileNode {
         id: sim_node.node.id,
         address: sim_node.node.address.to_string(),
-        routing_table: sim_node.routing_table.lock().await.flat_nodes().await,
+        routing_table: SerializableRoutingTable::from(sim_node.routing_table.lock().await.clone()).await,
         data_store: sim_node.data_store
     }
 }
@@ -477,8 +502,8 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
     let mut range = 1;
     let mut percent_threshold = 0.0;
     for node in nodes {
-        if percent_threshold <= index as f64/nodes_len as f64 {
-            println!("RUNNING... {:.1}%: {}/{}", (index as f64/nodes_len as f64 * 100.0), index, nodes_len);
+        if percent_threshold < index as f64/nodes_len as f64 {
+            println!("RUNNING... {:.1}%: {}/{}", index as f64/nodes_len as f64 * 100.0, index, nodes_len);
             percent_threshold = percent_threshold + 0.01;
         }
 
@@ -498,8 +523,6 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
 
         //run_node.join_network(get_global_socket().unwrap().clone(), &usable_addresses.choose(&mut rand::rng()).unwrap().clone()).await;
         run_node.join_network(get_global_socket().unwrap().clone(), &addresses[ind]).await;
-
-        run_node.iterative_find_node(get_global_socket().unwrap().clone(), rand::random::<u128>()).await;
 
         {
             let node_actual = run_node.node.lock().await.clone();
@@ -566,7 +589,7 @@ mod sim_tests {
     use rand::seq::IndexedRandom;
     use kademlia::Kademlia;
     use kademlia_structs::{KMessage, RoutingTable, Node};
-    use crate::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, SimulatedNode, RUNNING_NODE, SIM, RUNNING_ROUTING_TABLE};
+    use crate::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, RUNNING_NODE, SIM, RUNNING_ROUTING_TABLE};
 
     async fn create_test_node(id: u128, port: u16) -> Kademlia {
         let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
@@ -580,27 +603,6 @@ mod sim_tests {
 
         node
     }
-
-    /*#[tokio::test]
-    async fn simulated_node_file_test() {
-        let file_path = "../kademlia_nodes_empty.json";
-
-        // Load nodes from JSON
-        match load_simulated_nodes(file_path).await {
-            Ok(nodes) => {
-                println!("Loaded nodes: {:?}", nodes);
-
-                // Save the modified nodes back to a new file
-                let new_file_path = "../updated_nodes.json";
-                if let Err(e) = save_simulated_nodes(new_file_path, &nodes).await {
-                    eprintln!("Error saving nodes: {}", e);
-                } else {
-                    println!("Saved updated nodes to {}", new_file_path);
-                }
-            }
-            Err(e) => eprintln!("Error loading nodes: {}", e),
-        }
-    }*/
 
     #[tokio::test]
     async fn simulated_node_find_test() {
@@ -623,7 +625,7 @@ mod sim_tests {
 
                 let test_node_sock = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
 
-                let selected_port = 9678;
+                let selected_port = 9000 + (nodes.len() / 2) as u16;
 
                 let node_random = nodes.choose(&mut rand::rng()).unwrap().clone();
                 let mut temp_node_selected = None;
@@ -649,21 +651,90 @@ mod sim_tests {
 
                 node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock).await;
 
-                println!("Joined network");
+                println!("Joined Network");
 
                 // Perform lookup
                 let found_nodes_selected = node1.iterative_find_node(Arc::clone(&node1.socket), node_selected.node.id).await;
                 let found_nodes_random = node1.iterative_find_node(Arc::clone(&node1.socket), node_random.node.id).await;
 
-                println!("Send Find node");
+                println!("Send Find Node");
 
                 println!("SEARCH FOR SELECTED NODE WITH PORT {} :: found_nodes: {:?}", selected_port, found_nodes_selected);
                 println!("SEARCH FOR RANDOM NODE WITH PORT {} :: found_nodes: {:?}", node_random.node.address.port(), found_nodes_random);
-                println!("ROUTING TABLE:\n{}", node1.routing_table.lock().await.to_string().await);
+                {
+                    println!("ROUTING TABLE:\n{}", node1.routing_table.lock().await.to_string().await);
+                }
 
                 assert_eq!(found_nodes_selected[0], node_selected.node, "Should find selected, and it should be first in the list");
                 assert_eq!(found_nodes_random[0], node_random.node, "Should find random node, and it should be first in the list");
 
+            }
+            Err(e) => {
+                eprintln!("Error loading nodes: {}", e);
+                assert!(false, "Could not load nodes");
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn simulated_node_store_test() {
+        crate::init_socket_once().await;
+        let file_path = "../simulated_nodes_10000.json";
+
+        // Load nodes from JSON
+        match load_simulated_nodes(file_path).await {
+            Ok(nodes) => {
+
+                {
+                    SIM.lock().await.set_nodes(nodes.clone());
+                }
+
+                let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
+                {
+                    println!("NODE1:\nID: {}", node1.node.lock().await.id);
+                }
+                let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
+                println!("NODE1 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock1.clone().port());
+                node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
+                println!("Node1 Joined Network");
+
+                let key = rand::random::<u128>();
+                let value = "PLEASE DEAR GOD LET THIS WORK".to_string();
+                println!("STORE:\nKey: {}, Value: {}", key, value);
+                // Perform store
+                let store_nodes = node1.store_value(Arc::clone(&node1.socket), key, value.clone()).await;
+                println!("Send Store");
+                assert_eq!(store_nodes.len(), 2, "Should have stored in 2 nodes");
+
+                let mut node2 = create_test_node(rand::random::<u128>(), 6001).await;
+                {
+                    println!("NODE2:\nID: {}", node2.node.lock().await.id);
+                }
+                let test_node_sock2 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
+                println!("NODE2 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock2.clone().port());
+                node2.join_network(get_global_socket().unwrap().clone(), &test_node_sock2).await;
+                println!("Node2 Joined Network");
+
+                let found_value_option = node2.iterative_find_value(Arc::clone(&node2.socket), key).await;
+                println!("Search Value");
+                assert!(found_value_option.is_some(), "Did not find value");
+                let found_value = found_value_option.unwrap();
+
+                assert_eq!(found_value, value, "Should find value and it should be the correct one.");
+
+                let mut updated_nodes = nodes.clone();
+                {
+                    let sim = SIM.lock().await;
+                    updated_nodes = sim.get_all_nodes().await;
+                }
+
+                // Save the modified nodes back to a new file
+                let new_file_path = "../updated_simulator_nodes_stored.json";
+                if let Err(e) = save_simulated_nodes(new_file_path, &updated_nodes).await {
+                    eprintln!("Error saving nodes: {}", e);
+                } else {
+                    println!("Saved updated nodes to {}", new_file_path);
+                }
             }
             Err(e) => {
                 eprintln!("Error loading nodes: {}", e);
