@@ -10,8 +10,7 @@ use rand::prelude::IndexedRandom;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex};
 use kademlia::Kademlia;
 
 #[derive(Debug, Clone)]
@@ -71,22 +70,19 @@ impl Simulator {
     }
 }
 
-struct ChannelSender {
-    rx: Arc<Mutex<UnboundedReceiver<bool>>>,
-    tx: UnboundedSender<Node>
+struct RoutingTableInfo {
+    routing_table: Arc<Mutex<RoutingTable>>
 }
 
-impl ChannelSender {
-    pub fn new() -> ChannelSender {
-        ChannelSender {
-            rx: Arc::new(Mutex::new(mpsc::unbounded_channel::<bool>().1)),
-            tx: mpsc::unbounded_channel::<Node>().0
+impl RoutingTableInfo {
+    pub fn new() -> RoutingTableInfo {
+        RoutingTableInfo {
+            routing_table: Arc::new(Mutex::new(RoutingTable::new( Node { id: 0, address: "127.0.0.1:0".parse().unwrap() } )))
         }
     }
 
-    pub fn set(&mut self, channels: (UnboundedSender<Node>, UnboundedReceiver<bool>)) {
-        self.rx = Arc::new(Mutex::new(channels.1));
-        self.tx = channels.0;
+    pub fn set(&mut self, routing_table: Arc<Mutex<RoutingTable>>) {
+        self.routing_table = routing_table;
     }
 }
 
@@ -94,7 +90,7 @@ impl ChannelSender {
 lazy_static! {
     static ref SIM: Arc<Mutex<Simulator>> = Arc::new(Mutex::new(Simulator::new_empty()));
     static ref RUNNING_NODE: Arc<Mutex<Node>> = Arc::new(Mutex::new( Node { id: 0, address: "127.0.0.1:0".parse().unwrap() } ));
-    static ref RUNNING_CHANNELS: Arc<Mutex<ChannelSender>> = Arc::new(Mutex::new(ChannelSender::new()));
+    static ref RUNNING_ROUTING_TABLE: Arc<Mutex<RoutingTableInfo>> = Arc::new(Mutex::new(RoutingTableInfo::new()));
 }
 
 // A global cell that can store our socket once
@@ -342,11 +338,13 @@ impl KMessage for SimulatedMessageHandler {
                         if from_node.id == self_node.id {
                             match km.sender() {
                                 Some(sender) => {
-                                    let channels = RUNNING_CHANNELS.lock().await;
+                                    let running_table = RUNNING_ROUTING_TABLE.lock().await;
+                                    running_table.routing_table.lock().await.add_node(Arc::new(SimulatedMessageHandler::create(0)), sender, &*get_global_socket().unwrap().clone()).await;
+                                    /*let channels = RUNNING_CHANNELS.lock().await;
                                     let tx = channels.tx.clone();
                                     tx.send(sender).unwrap();
                                     let mut rx = channels.rx.lock().await;
-                                    rx.recv().await;
+                                    rx.recv().await;*/
                                 }
                                 None => {}
                             }
@@ -476,6 +474,7 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
     let mut usable_addresses = vec![nodes.get(0).unwrap().node.address];
     nodes.remove(0);
     let mut index = 0;
+    let mut range = 1;
     let mut percent_threshold = 0.0;
     for node in nodes {
         if percent_threshold <= index as f64/nodes_len as f64 {
@@ -485,21 +484,22 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
 
         let mut run_node = Kademlia::new_with_sock(node.node.id, "127.0.0.1", node.node.address.port(), RoutingTable::new(node.node.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
 
-        let channels = run_node.start_sim().await;
         {
             RUNNING_NODE.lock().await.update(&node.node.clone());
-            RUNNING_CHANNELS.lock().await.set(channels);
+            RUNNING_ROUTING_TABLE.lock().await.set(Arc::clone(&run_node.routing_table));
         }
+
+        let ind;
+        if index ^ (range * 2) == 0 {
+            range = range * 2;
+        }
+
+        ind = rand::random_range(0..range);
 
         //run_node.join_network(get_global_socket().unwrap().clone(), &usable_addresses.choose(&mut rand::rng()).unwrap().clone()).await;
-        run_node.join_network(get_global_socket().unwrap().clone(), &addresses[index]).await;
+        run_node.join_network(get_global_socket().unwrap().clone(), &addresses[ind]).await;
 
-        run_node.iterative_find_node(get_global_socket().unwrap().clone(), rand::random::<u128>(), 4).await;
-
-        {
-            let channels = RUNNING_CHANNELS.lock().await;
-            run_node.stop_sim(channels.tx.clone(), Arc::clone(&channels.rx)).await;
-        }
+        run_node.iterative_find_node(get_global_socket().unwrap().clone(), rand::random::<u128>()).await;
 
         {
             let node_actual = run_node.node.lock().await.clone();
@@ -566,12 +566,17 @@ mod sim_tests {
     use rand::seq::IndexedRandom;
     use kademlia::Kademlia;
     use kademlia_structs::{KMessage, RoutingTable, Node};
-    use crate::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, SimulatedNode, RUNNING_NODE, RUNNING_CHANNELS, SIM};
+    use crate::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, SimulatedNode, RUNNING_NODE, SIM, RUNNING_ROUTING_TABLE};
 
     async fn create_test_node(id: u128, port: u16) -> Kademlia {
-        let node = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
+        let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
 
-        let mut node = Kademlia::new_with_sock(id, "127.0.0.1", port, RoutingTable::new(node.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
+        let mut node = Kademlia::new_with_sock(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
+
+        {
+            RUNNING_NODE.lock().await.update(&node_actual.clone());
+            RUNNING_ROUTING_TABLE.lock().await.set(Arc::clone(&node.routing_table));
+        }
 
         node
     }
@@ -612,12 +617,6 @@ mod sim_tests {
 
                 let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
 
-                let channels = node1.start_sim().await;
-                {
-                    RUNNING_NODE.lock().await.update(&node1.node.lock().await.clone());
-                    RUNNING_CHANNELS.lock().await.set(channels);
-                }
-
                 {
                     println!("NODE:\nID: {}", node1.node.lock().await.id);
                 }
@@ -653,13 +652,8 @@ mod sim_tests {
                 println!("Joined network");
 
                 // Perform lookup
-                let found_nodes_selected = node1.iterative_find_node(Arc::clone(&node1.socket), node_selected.node.id, 4).await;
-                let found_nodes_random = node1.iterative_find_node(Arc::clone(&node1.socket), node_random.node.id, 4).await;
-
-                {
-                    let channels = RUNNING_CHANNELS.lock().await;
-                    node1.stop_sim(channels.tx.clone(), Arc::clone(&channels.rx)).await;
-                }
+                let found_nodes_selected = node1.iterative_find_node(Arc::clone(&node1.socket), node_selected.node.id).await;
+                let found_nodes_random = node1.iterative_find_node(Arc::clone(&node1.socket), node_random.node.id).await;
 
                 println!("Send Find node");
 

@@ -240,64 +240,26 @@ impl Kademlia {
         self.socket.send_to(&*serde_json::to_vec(&KademliaMessage::Stop {}).unwrap(), &self.receive_addr).await.unwrap();
     }
 
-    pub async fn start_sim(&mut self) -> (UnboundedSender<Node>, UnboundedReceiver<bool>) {
-        let socket = Arc::clone(&self.socket);
-        let message_handler = Arc::clone(&self.message_handler);
-        let routing_table = Arc::clone(&self.routing_table);
-        let _data_store = Arc::clone(&self.data_store);
-        let stop_clone = Arc::clone(&self.stop_signal);
-        let (leave_tx, mut rx) = mpsc::unbounded_channel::<Node>();
-        let (tx, mut leave_rx) = mpsc::unbounded_channel::<bool>();
-
-        let handle = tokio::spawn(async move {
-            while !stop_clone.load(Ordering::Relaxed) {
-                if let Some(node) = rx.recv().await {
-                    if node.id != 0 {
-                        //println!("Node: {}", node.address);
-                        routing_table.lock().await.add_node(Arc::clone(&message_handler), node.clone(), &*Arc::clone(&socket)).await;
-                        tx.send(true).unwrap();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            println!("FINISHED");
-            rx.close();
-            drop(rx);
-            tx.send(true).unwrap();
-        });
-        *Arc::get_mut(&mut self.join_handle).unwrap() = Some(handle);
-
-        (leave_tx, leave_rx)
-    }
-
-    pub async fn stop_sim(&self, tx: UnboundedSender<Node>, mut rx: Arc<Mutex<UnboundedReceiver<bool>>>) {
-        self.stop_signal.store(true, Ordering::Relaxed);
-
-        if let Some(handle) = Arc::get_mut(&mut self.join_handle.clone()).and_then(|h| h.take()) {
-            handle.abort();
-            let _ = handle.await;
-        }
-
-        tx.send(Node { id: 0, address: "127.0.0.1:0".parse().unwrap() } ).unwrap();
-        rx.lock().await.recv().await;
-        drop(rx);
-    }
-
-    pub async fn iterative_find_node(&self, socket: Arc<UdpSocket>, target_id: u128, guaranteed_times_searched: i32) -> Vec<Node> {
+    pub async fn iterative_find_node(&self, socket: Arc<UdpSocket>, target_id: u128) -> Vec<Node> {
         let self_node = self.get_node().await;
+
         let mut queried_nodes = HashSet::new();
+
         let mut closest_nodes = self.routing_table.lock().await.find_closest_nodes(target_id, LOOKUP_ALPHA).await;
-        closest_nodes.retain(|x| *x != self_node);
+        if closest_nodes.contains(&self_node) {
+            closest_nodes = self.routing_table.lock().await.find_closest_nodes(target_id, LOOKUP_ALPHA + 1).await;
+            closest_nodes.retain(|x| *x != self_node);
+        }
         let mut all_nodes = closest_nodes.clone();
+
         let mut best_known_distance = u128::MAX;
-        let mut new_nodes_found = true;
 
-        let mut times_searched = 0;
+        let mut run_k_search = false;
+        let mut end_search = false;
 
-        while new_nodes_found || times_searched < guaranteed_times_searched {
-            new_nodes_found = false;
-            let mut new_closest_nodes = Vec::new();
+        //println!("{:?}", all_nodes);
+
+        while !end_search {
             let mut tasks = Vec::new();
 
             for node in closest_nodes.iter() {
@@ -347,49 +309,51 @@ impl Kademlia {
                 tasks.push(task);
             }
 
-            // Collect results from tasks
-            let prev_best_known_distance = best_known_distance;
             for task in tasks {
                 if let Ok(Some(nodes)) = task.await {
-                    for n in nodes {
-                        let distance = n.id ^ target_id;
-                        if distance < prev_best_known_distance || times_searched < guaranteed_times_searched {
-                            new_closest_nodes.push(n);
-                            new_nodes_found = true;
-                            if distance < best_known_distance {
-                                best_known_distance = distance;
-                            }
-                        }
+                    for node in nodes {
+                        all_nodes.push(node.clone());
                     }
                 }
             }
 
-            if new_nodes_found || times_searched < guaranteed_times_searched {
-                closest_nodes.clear();
-                closest_nodes.extend(new_closest_nodes.clone());
-                all_nodes.extend(new_closest_nodes);
-                closest_nodes.retain(|x| *x != self_node);
-                closest_nodes.retain(|x| !queried_nodes.contains(&x.address));
-                closest_nodes.sort_by_key(|n| n.id ^ target_id);
-                closest_nodes.dedup();
-                closest_nodes.truncate(LOOKUP_ALPHA);
+            all_nodes.dedup();
+            all_nodes.retain(|x| *x != self_node);
+
+            if run_k_search {
+                end_search = true;
+                break;
             }
 
-            times_searched = times_searched + 1;
+            let mut found_closer = false;
+            for node in all_nodes.clone() {
+                let distance = node.id ^ target_id;
+                if distance < best_known_distance {
+                    best_known_distance = distance;
+                    found_closer = true;
+                }
+            }
+
+            closest_nodes = all_nodes.clone();
+            closest_nodes.retain(|x| !queried_nodes.contains(&x.address));
+            closest_nodes.sort_by_key(|n| n.id ^ target_id);
+
+            if found_closer {
+                closest_nodes.truncate(LOOKUP_ALPHA);
+            } else {
+                run_k_search = true;
+                closest_nodes.truncate(DEFAULT_K);
+            }
         }
 
         all_nodes.push(self_node.clone());
         all_nodes.sort_by_key(|n| n.id ^ target_id);
-        all_nodes.dedup();
         all_nodes.truncate(DEFAULT_K);
-
-        println!("{:?}", all_nodes);
-
         all_nodes
     }
 
     // Perform an iterative lookup for a value in the DHT
-    pub async fn iterative_find_value(&self, socket: Arc<UdpSocket>, key: u128, guaranteed_times_searched: i32) -> Option<String> {
+    pub async fn iterative_find_value(&self, socket: Arc<UdpSocket>, key: u128) -> Option<String> {
         let self_node = self.get_node().await;
         // Check if this node has the value first
         let local = self.data_store.lock().await.get(&key).cloned();
@@ -407,9 +371,7 @@ impl Kademlia {
         let mut best_known_distance = u128::MAX;
         let mut new_nodes_found = true;
 
-        let mut times_searched = 0;
-
-        while new_nodes_found || times_searched < guaranteed_times_searched {
+        while new_nodes_found {
             new_nodes_found = false;
             let mut new_closest_nodes: Vec<Node> = Vec::new();
             let mut tasks = Vec::new();
@@ -473,7 +435,7 @@ impl Kademlia {
                         Err(received_nodes) => {
                             for n in received_nodes {
                                 let distance = n.id ^ key;
-                                if distance < prev_best_known_distance || times_searched < guaranteed_times_searched {
+                                if distance < prev_best_known_distance {
                                     new_closest_nodes.push(n);
                                     new_nodes_found = true;
                                     if distance < best_known_distance {
@@ -486,15 +448,13 @@ impl Kademlia {
                 }
             }
 
-            if new_nodes_found || times_searched < guaranteed_times_searched {
+            if new_nodes_found {
                 closest_nodes.clear();
                 closest_nodes.extend(new_closest_nodes);
                 closest_nodes.sort_by_key(|n| n.id ^ key);
                 closest_nodes.dedup();
                 closest_nodes.truncate(LOOKUP_ALPHA);
             }
-
-            times_searched = times_searched + 1;
         }
 
         None
@@ -503,7 +463,7 @@ impl Kademlia {
     pub async fn store_value(&mut self, socket: Arc<UdpSocket>, key: u128, value: String) -> Vec<Node> {
         let self_node = self.get_node().await;
         // Find the closest nodes to store the value
-        let mut closest_nodes = self.iterative_find_node(Arc::clone(&socket), key, 2).await;
+        let mut closest_nodes = self.iterative_find_node(Arc::clone(&socket), key).await;
         closest_nodes.truncate(2);
 
 
@@ -562,7 +522,7 @@ impl Kademlia {
         }
 
         if response.is_ok() {
-            self.iterative_find_node(socket_clone, self_node.id, 4).await;
+            self.iterative_find_node(socket_clone, self_node.id).await;
         } else {
             println!("FAILED TO JOIN NETWORK");
         }
@@ -600,7 +560,7 @@ mod kad_tests {
         node2.join_network(Arc::clone(&node2.socket), &node3_addr).await;
 
         // Perform lookup
-        let found_nodes = node1.iterative_find_node(Arc::clone(&node1.socket), 2, 2).await;
+        let found_nodes = node1.iterative_find_node(Arc::clone(&node1.socket), 2).await;
 
         sleep(Duration::from_secs(2)).await; // Allow time for replication
 
@@ -735,7 +695,7 @@ mod kad_tests {
         sleep(Duration::from_secs(1)).await;
 
         // Attempt to retrieve the stored value from node4
-        let value = node4.iterative_find_value(Arc::clone(&node4.socket), 2, 2).await;
+        let value = node4.iterative_find_value(Arc::clone(&node4.socket), 2).await;
 
         node1.stop().await;
         node2.stop().await;
