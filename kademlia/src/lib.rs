@@ -23,8 +23,7 @@ pub struct Kademlia {
 
 // TODO: Implement new event thread for watching last_seen information and pinging nodes
 // TODO: which have not been seen in an hour + evicting those which fail
-// TODO: Add RPC ID's to messages
-// TODO:
+// TODO: Add RPC ID's to messages?
 impl Kademlia {
     pub async fn new(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn KMessage>) -> Self {
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
@@ -91,6 +90,8 @@ impl Kademlia {
         let stop_clone = Arc::clone(&self.stop_signal);
         println!("STARTING {}", socket.local_addr().unwrap());
 
+        // TODO: Modify this thread to spawn other threads to process messages as they come in.
+        // TODO: This should ensure that this thread is always available to actually receive messages
         let handle = tokio::spawn(async move {
             let mut buf = [0; 4096];
             while !stop_clone.load(Ordering::Relaxed) {

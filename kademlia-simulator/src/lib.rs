@@ -58,6 +58,9 @@ impl Simulator {
         finished
     }
 
+    // TODO: Modify FileNode and SimulatedNode to have is_alive: boolean key-value pairs
+    // TODO: After done, need to create an event loop which randomly connects and disconnects
+    // TODO: existing Node's and also creates random new nodes to join the network.
     pub fn node_is_alive(&self, _address: SocketAddr) -> bool {
         rand::random_bool(0.8)
     }
