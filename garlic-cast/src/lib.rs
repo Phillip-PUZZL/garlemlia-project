@@ -224,6 +224,7 @@ pub struct Proxy {
     neighbor_1_hops: u16,
     neighbor_2_hops: u16,
     public_key: String,
+    #[serde(with = "chrono::serde::ts_seconds")]
     used_last: DateTime<Utc>
 }
 
