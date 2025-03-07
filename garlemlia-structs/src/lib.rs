@@ -9,6 +9,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, mpsc::UnboundedReceiver, mpsc};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{timeout, Duration};
+use chrono::{DateTime, Utc};
 
 /// Custom error type for messaging operations.
 #[derive(Debug, Clone)]
@@ -207,7 +208,7 @@ impl RoutingTable {
         }
     }
 
-    pub async fn add_node_from_responder(&mut self, message_handler: Arc<Box<dyn KMessage>>, node: Node, socket: Arc<UdpSocket>) {
+    pub async fn add_node_from_responder(&mut self, message_handler: Arc<Box<dyn GMessage>>, node: Node, socket: Arc<UdpSocket>) {
         if self.local_node.id == node.id {
             return;
         }
@@ -229,7 +230,7 @@ impl RoutingTable {
             }
 
             if let Some(lru_node) = bucket_clone.nodes.front().cloned() {
-                let ping_msg = KademliaMessage::Ping {
+                let ping_msg = GarlemliaMessage::Ping {
                     sender: local_node.clone(),
                 };
 
@@ -247,7 +248,7 @@ impl RoutingTable {
 
                 {
                     match mh.recv(300, &lru_node.address).await {
-                        Ok(KademliaMessage::Pong { sender, .. }) if sender.id == lru_node.id => {
+                        Ok(GarlemliaMessage::Pong { sender, .. }) if sender.id == lru_node.id => {
                             let mut locked_buckets = self_buckets.lock().await;
                             let bucket = locked_buckets.get_mut(&index).unwrap();
                             bucket.update_node(lru_node);
@@ -264,7 +265,7 @@ impl RoutingTable {
         });
     }
 
-    pub async fn add_node(&mut self, message_handler: Arc<Box<dyn KMessage>>, node: Node, socket: &UdpSocket) {
+    pub async fn add_node(&mut self, message_handler: Arc<Box<dyn GMessage>>, node: Node, socket: &UdpSocket) {
         if self.local_node.id == node.id {
             return;
         }
@@ -277,7 +278,7 @@ impl RoutingTable {
         let mut locked_buckets = self.buckets.lock().await;
         let bucket = locked_buckets.get_mut(&index).unwrap();
         if let Some(lru_node) = bucket.nodes.front().cloned() {
-            let ping_msg = KademliaMessage::Ping {
+            let ping_msg = GarlemliaMessage::Ping {
                 sender: self.local_node.clone(),
             };
 
@@ -289,7 +290,7 @@ impl RoutingTable {
             }
 
             match message_handler.recv(300, &lru_node.address).await {
-                Ok(KademliaMessage::Pong { sender, .. }) if sender.id == lru_node.id => {
+                Ok(GarlemliaMessage::Pong { sender, .. }) if sender.id == lru_node.id => {
                     bucket.update_node(lru_node);
                 }
                 Ok(_) | Err(_) => {
@@ -429,21 +430,21 @@ impl RoutingTable {
 #[derive(Debug, Clone)]
 pub struct MessageChannel {
     pub node_id: u128,
-    pub msg: KademliaMessage,
+    pub msg: GarlemliaMessage,
 }
 
 #[async_trait]
-pub trait KMessage: Send + Sync {
-    fn create(channel_count: u8) -> Box<dyn KMessage> where Self: Sized;
+pub trait GMessage: Send + Sync {
+    fn create(channel_count: u8) -> Box<dyn GMessage> where Self: Sized;
     async fn send_tx(&self, addr: SocketAddr, msg: MessageChannel) -> Result<(), MessageError>;
-    async fn send_no_recv(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
-    async fn send(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError>;
-    async fn recv(&self, timeout_ms: u64, src: &SocketAddr) -> Result<KademliaMessage, MessageError>;
-    fn clone_box(&self) -> Box<dyn KMessage>;
+    async fn send_no_recv(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError>;
+    async fn send(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError>;
+    async fn recv(&self, timeout_ms: u64, src: &SocketAddr) -> Result<GarlemliaMessage, MessageError>;
+    fn clone_box(&self) -> Box<dyn GMessage>;
 }
 
-impl Clone for Box<dyn KMessage> {
-    fn clone(&self) -> Box<dyn KMessage> {
+impl Clone for Box<dyn GMessage> {
+    fn clone(&self) -> Box<dyn GMessage> {
         self.clone_box()
     }
 }
@@ -461,7 +462,7 @@ pub struct HandlerChannelSender {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct MessageHandler {
+pub struct GarlemliaMessageHandler {
     available_rx: Arc<Mutex<Vec<HandlerChannelReceiver>>>,
     unavailable_rx: Arc<Mutex<HashMap<String, HandlerChannelReceiver>>>,
     available_tx: Arc<Mutex<Vec<HandlerChannelSender>>>,
@@ -469,8 +470,8 @@ pub struct MessageHandler {
 }
 
 #[async_trait]
-impl KMessage for MessageHandler {
-    fn create(channel_count: u8) -> Box<dyn KMessage> {
+impl GMessage for GarlemliaMessageHandler {
+    fn create(channel_count: u8) -> Box<dyn GMessage> {
         // Build up our “available” pools:
         let mut rx_pool = Vec::with_capacity(channel_count as usize);
         let mut tx_pool = Vec::with_capacity(channel_count as usize);
@@ -487,7 +488,7 @@ impl KMessage for MessageHandler {
             });
         }
 
-        Box::new(MessageHandler {
+        Box::new(GarlemliaMessageHandler {
             available_rx: Arc::new(Mutex::new(rx_pool)),
             available_tx: Arc::new(Mutex::new(tx_pool)),
             unavailable_rx: Arc::new(Mutex::new(HashMap::new())),
@@ -521,7 +522,7 @@ impl KMessage for MessageHandler {
         }
     }
 
-    async fn send_no_recv(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send_no_recv(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError> {
         // Now actually send the UDP message
         let bytes = serde_json::to_vec(msg)
             .map_err(|e| MessageError::SerializationError(e.to_string()))?;
@@ -530,7 +531,7 @@ impl KMessage for MessageHandler {
     }
 
     /// Takes an RX/TX from the “available” pool, assigns it to the `target`, and sends the given message.
-    async fn send(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError> {
         let mut need_rx = true;
 
         // Try once outside the loop
@@ -592,7 +593,7 @@ impl KMessage for MessageHandler {
     }
 
     /// Receives a message from the “unavailable” RX assigned to `src`, then returns that RX/TX pair to the pool.
-    async fn recv(&self, timeout_ms: u64, src: &SocketAddr) -> Result<KademliaMessage, MessageError> {
+    async fn recv(&self, timeout_ms: u64, src: &SocketAddr) -> Result<GarlemliaMessage, MessageError> {
         // Attempt to find the assigned RX for this address
         let maybe_rx = {
             let mut rx_map = self.unavailable_rx.lock().await;
@@ -637,7 +638,7 @@ impl KMessage for MessageHandler {
             println!("Warning: Could not find matching RX for {:?}", src);
         }
 
-        // Return the final KademliaMessage or an error
+        // Return the final GarlemliaMessage or an error
         match msg_result {
             Ok(channel) => Ok(channel.msg),
             Err(e) => {
@@ -647,44 +648,145 @@ impl KMessage for MessageHandler {
         }
     }
 
-    fn clone_box(&self) -> Box<dyn KMessage> {
+    fn clone_box(&self) -> Box<dyn GMessage> {
         Box::new(self.clone())
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum KademliaMessage {
+pub enum GarlemliaMessage {
     FindNode { id: u128, sender: Node },
     Store { key: u128, value: String, sender: Node },
     FindValue { key: u128, sender: Node },
     Response { nodes: Vec<Node>, value: Option<String>, sender: Node },
+    Garlic { msg: GarlicMessage, sender: Node },
     Ping { sender: Node },
     Pong { sender: Node },
     Stop { }
 }
 
-impl KademliaMessage {
+impl GarlemliaMessage {
     pub fn sender_id(&self) -> u128 {
         match self {
-            KademliaMessage::FindNode { sender, .. } => sender.id.clone(),
-            KademliaMessage::Store { sender, .. } => sender.id.clone(),
-            KademliaMessage::FindValue { sender, .. } => sender.id.clone(),
-            KademliaMessage::Response { sender, .. } => sender.id.clone(),
-            KademliaMessage::Ping {sender} => sender.id.clone(),
-            KademliaMessage::Pong { sender, .. } => sender.id.clone(),
-            KademliaMessage::Stop {} => 0,
+            GarlemliaMessage::FindNode { sender, .. } => sender.id.clone(),
+            GarlemliaMessage::Store { sender, .. } => sender.id.clone(),
+            GarlemliaMessage::FindValue { sender, .. } => sender.id.clone(),
+            GarlemliaMessage::Response { sender, .. } => sender.id.clone(),
+            GarlemliaMessage::Garlic { sender, .. } => sender.id.clone(),
+            GarlemliaMessage::Ping {sender} => sender.id.clone(),
+            GarlemliaMessage::Pong { sender, .. } => sender.id.clone(),
+            GarlemliaMessage::Stop {} => 0,
         }
     }
 
     pub fn sender(&self) -> Option<Node> {
         match self {
-            KademliaMessage::FindNode { sender, .. } => Some(sender.clone()),
-            KademliaMessage::Store { sender, .. } => Some(sender.clone()),
-            KademliaMessage::FindValue { sender, .. } => Some(sender.clone()),
-            KademliaMessage::Response { sender, .. } => Some(sender.clone()),
-            KademliaMessage::Ping {sender} => Some(sender.clone()),
-            KademliaMessage::Pong { sender, .. } => Some(sender.clone()),
-            KademliaMessage::Stop {} => None,
+            GarlemliaMessage::FindNode { sender, .. } => Some(sender.clone()),
+            GarlemliaMessage::Store { sender, .. } => Some(sender.clone()),
+            GarlemliaMessage::FindValue { sender, .. } => Some(sender.clone()),
+            GarlemliaMessage::Response { sender, .. } => Some(sender.clone()),
+            GarlemliaMessage::Garlic { sender, .. } => Some(sender.clone()),
+            GarlemliaMessage::Ping {sender} => Some(sender.clone()),
+            GarlemliaMessage::Pong { sender, .. } => Some(sender.clone()),
+            GarlemliaMessage::Stop {} => None,
+        }
+    }
+}
+
+/// GARLIC CAST STRUCTS
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub struct Clove {
+    pub sequence_number: u128,
+    msg_fragment: String,
+    key_fragment: String,
+    #[serde(with = "chrono::serde::ts_seconds")]
+    sent: DateTime<Utc>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CloveData {
+    pub clove: Clove,
+    pub from: Node
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Hash, Eq, PartialEq)]
+pub struct CloveNode {
+    // The sequence number used when sending to this node
+    // Most of the time it will be the chain sequence number, but if it is an alt node
+    // then it will be the randomly generated sequence number
+    pub sequence_number: u128,
+    pub node: Node
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub enum GarlicMessage {
+    Forward {
+        sequence_number: u128,
+        clove: Clove
+    },
+    IsAlive {
+        sender: Node,
+    },
+    ProxyAgree {
+        sequence_number: u128,
+        updated_sequence_number: u128,
+        hops: u128,
+        clove: Clove
+    },
+    SearchOverlay { },
+    SearchGarlemlia { },
+    ResponseDirect { },
+    ResponseWithValidator { },
+    RequestAlt { },
+    RefreshAlt { },
+    UpdateAlt { }
+}
+
+impl GarlicMessage {
+    pub fn sequence_number(&self) -> u128 {
+        match self {
+            GarlicMessage::Forward { sequence_number, .. } => {sequence_number.clone()}
+            GarlicMessage::IsAlive { .. } => {0}
+            GarlicMessage::ProxyAgree { sequence_number, .. } => {sequence_number.clone()}
+            GarlicMessage::SearchOverlay { .. } => {0}
+            GarlicMessage::SearchGarlemlia { .. } => {0}
+            GarlicMessage::ResponseDirect { .. } => {0}
+            GarlicMessage::ResponseWithValidator { .. } => {0}
+            GarlicMessage::RequestAlt { .. } => {0}
+            GarlicMessage::RefreshAlt { .. } => {0}
+            GarlicMessage::UpdateAlt { .. } => {0}
+        }
+    }
+
+    pub fn clove(&self) -> Option<Clove> {
+        match self {
+            GarlicMessage::Forward { clove, .. } => {Some(clove.clone().clone())}
+            GarlicMessage::IsAlive { .. } => {None}
+            GarlicMessage::ProxyAgree { clove, .. } => {Some(clove.clone())}
+            GarlicMessage::SearchOverlay { .. } => {None}
+            GarlicMessage::SearchGarlemlia { .. } => {None}
+            GarlicMessage::ResponseDirect { .. } => {None}
+            GarlicMessage::ResponseWithValidator { .. } => {None}
+            GarlicMessage::RequestAlt { .. } => {None}
+            GarlicMessage::RefreshAlt { .. } => {None}
+            GarlicMessage::UpdateAlt { .. } => {None}
+        }
+    }
+
+    pub fn build_send_is_alive(sender: Node) -> GarlemliaMessage {
+        GarlemliaMessage::Garlic {
+            msg: GarlicMessage::IsAlive {
+                sender: sender.clone(),
+            },
+            sender,
+        }
+    }
+
+    pub fn build_send(sender: Node, msg: GarlicMessage) -> GarlemliaMessage {
+        GarlemliaMessage::Garlic {
+            msg,
+            sender
         }
     }
 }

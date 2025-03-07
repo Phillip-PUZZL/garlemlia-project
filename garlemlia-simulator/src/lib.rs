@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use kademlia_structs::{KBucket, KMessage, KademliaMessage, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
+use garlemlia_structs::{KBucket, GMessage, GarlemliaMessage, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -12,7 +12,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex};
-use kademlia::Kademlia;
+use garlemlia::Garlemlia;
 
 #[derive(Debug, Clone)]
 pub struct Simulator {
@@ -97,7 +97,7 @@ impl RoutingTableInfo {
 }
 
 lazy_static! {
-    static ref SIM: Arc<Mutex<Simulator>> = Arc::new(Mutex::new(Simulator::new_empty()));
+    pub static ref SIM: Arc<Mutex<Simulator>> = Arc::new(Mutex::new(Simulator::new_empty()));
     static ref RUNNING_NODES: Arc<Mutex<HashSet<Node>>> = Arc::new(Mutex::new(HashSet::new()));
     static ref RUNNING_ROUTING_TABLES: Arc<Mutex<HashMap<Node, RoutingTableInfo>>> = Arc::new(Mutex::new(HashMap::new()));
 }
@@ -199,14 +199,14 @@ impl SimulatedNode {
         }
     }
 
-    async fn parse_message(&mut self, sender_node: Node, msg: KademliaMessage) -> Result<KademliaMessage, Option<MessageError>> {
+    async fn parse_message(&mut self, sender_node: Node, msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
         match msg {
-            KademliaMessage::FindNode { id, .. } => {
+            GarlemliaMessage::FindNode { id, .. } => {
                 // Add the sender to the routing table
                 self.add_node(sender_node).await;
                 let response = if id == self.node.id {
                     // If the search target is this node itself, return only this node
-                    KademliaMessage::Response {
+                    GarlemliaMessage::Response {
                         nodes: vec![self.node.clone()],
                         value: None,
                         sender: self.node.clone(),
@@ -218,7 +218,7 @@ impl SimulatedNode {
                         closest_nodes = self.routing_table.lock().await.find_closest_nodes(id, DEFAULT_K).await;
                     }
 
-                    KademliaMessage::Response {
+                    GarlemliaMessage::Response {
                         nodes: closest_nodes,
                         value: None,
                         sender: self.node.clone(),
@@ -229,19 +229,19 @@ impl SimulatedNode {
             }
 
             // Store a key-value pair
-            KademliaMessage::Store { key, value, .. } => {
+            GarlemliaMessage::Store { key, value, .. } => {
                 self.add_node(sender_node).await;
                 self.data_store.insert(key, value);
                 Err(None)
             }
 
             // Use find_closest_nodes() if value is not found
-            KademliaMessage::FindValue { key, .. } => {
+            GarlemliaMessage::FindValue { key, .. } => {
                 self.add_node(sender_node).await;
                 let value = self.data_store.get(&key).cloned();
 
                 let response = if let Some(val) = value {
-                    KademliaMessage::Response {
+                    GarlemliaMessage::Response {
                         nodes: vec![],
                         value: Some(val),
                         sender: self.node.clone(),
@@ -252,7 +252,7 @@ impl SimulatedNode {
                         closest_nodes = self.routing_table.lock().await.find_closest_nodes(key, DEFAULT_K).await;
                     }
 
-                    KademliaMessage::Response {
+                    GarlemliaMessage::Response {
                         nodes: closest_nodes,
                         value: None,
                         sender: self.node.clone(),
@@ -262,10 +262,10 @@ impl SimulatedNode {
                 Ok(response)
             }
 
-            KademliaMessage::Response { nodes, value, sender, .. } => {
+            GarlemliaMessage::Response { nodes, value, sender, .. } => {
                 println!("This should never happen");
                 self.add_node(sender_node).await;
-                let _constructed = KademliaMessage::Response {
+                let _constructed = GarlemliaMessage::Response {
                     nodes,
                     value,
                     sender,
@@ -274,19 +274,24 @@ impl SimulatedNode {
                 Err(None)
             }
 
-            KademliaMessage::Ping { .. } => {
+            GarlemliaMessage::Garlic { msg, sender } => {
+                // TODO: Implement logic for garlic-cast messages
+                Err(None)
+            }
+
+            GarlemliaMessage::Ping { .. } => {
                 if SIM.lock().await.node_is_alive(self.node.address) {
-                    Ok(KademliaMessage::Pong { sender: self.node.clone() })
+                    Ok(GarlemliaMessage::Pong { sender: self.node.clone() })
                 } else {
                     Err(Some(MessageError::Timeout))
                 }
             }
 
-            KademliaMessage::Pong { .. } => {
+            GarlemliaMessage::Pong { .. } => {
                 Err(None)
             }
 
-            KademliaMessage::Stop {} => {
+            GarlemliaMessage::Stop {} => {
                 Err(None)
             }
         }
@@ -294,13 +299,13 @@ impl SimulatedNode {
 }
 
 #[derive(Debug, Clone)]
-struct SimulatedMessageHandler {
-    pub messages: Arc<Mutex<HashMap<SocketAddr, VecDeque<Result<KademliaMessage, Option<MessageError>>>>>>,
+pub struct SimulatedMessageHandler {
+    pub messages: Arc<Mutex<HashMap<SocketAddr, VecDeque<Result<GarlemliaMessage, Option<MessageError>>>>>>,
 }
 
 #[async_trait]
-impl KMessage for SimulatedMessageHandler {
-    fn create(_channel_count: u8) -> Box<dyn KMessage> {
+impl GMessage for SimulatedMessageHandler {
+    fn create(_channel_count: u8) -> Box<dyn GMessage> {
         Box::new(SimulatedMessageHandler {
             messages: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -310,7 +315,7 @@ impl KMessage for SimulatedMessageHandler {
         Ok(())
     }
 
-    async fn send_no_recv(&self, _socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send_no_recv(&self, _socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError> {
         let check_node;
         {
             check_node = SIM.lock().await.nodes.get_mut(target).cloned();
@@ -327,7 +332,7 @@ impl KMessage for SimulatedMessageHandler {
     }
 
     // Send a message to another node
-    async fn send(&self, _socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &KademliaMessage) -> Result<(), MessageError> {
+    async fn send(&self, _socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError> {
         //println!("Send {:?} to {} from {}", msg, target, self_node.clone().address);
         let check_node;
         {
@@ -399,7 +404,7 @@ impl KMessage for SimulatedMessageHandler {
         Ok(())
     }
 
-    async fn recv(&self, _time: u64, src: &SocketAddr) -> Result<KademliaMessage, MessageError> {
+    async fn recv(&self, _time: u64, src: &SocketAddr) -> Result<GarlemliaMessage, MessageError> {
         let mut message = None;
         {
             let mut self_messages = self.messages.lock().await;
@@ -435,7 +440,7 @@ impl KMessage for SimulatedMessageHandler {
         }
     }
 
-    fn clone_box(&self) -> Box<dyn KMessage> {
+    fn clone_box(&self) -> Box<dyn GMessage> {
         Box::new(self.clone())
     }
 }
@@ -479,14 +484,14 @@ pub async fn save_simulated_nodes(file_path: &str, nodes: &Vec<SimulatedNode>) -
     Ok(())
 }
 
-async fn add_running(node: Node, routing_table: Arc<Mutex<RoutingTable>>) {
+pub async fn add_running(node: Node, routing_table: Arc<Mutex<RoutingTable>>) {
     {
         RUNNING_NODES.lock().await.insert(node.clone());
         RUNNING_ROUTING_TABLES.lock().await.insert(node, RoutingTableInfo::from(routing_table));
     }
 }
 
-async fn remove_running(node: Node) {
+pub async fn remove_running(node: Node) {
     {
         RUNNING_NODES.lock().await.remove(&node);
         RUNNING_ROUTING_TABLES.lock().await.remove(&node);
@@ -519,7 +524,7 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
             percent_threshold = percent_threshold + 0.01;
         }
 
-        let mut run_node = Kademlia::new_with_sock(node.node.id, "127.0.0.1", node.node.address.port(), RoutingTable::new(node.node.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
+        let mut run_node = Garlemlia::new_with_sock(node.node.id, "127.0.0.1", node.node.address.port(), RoutingTable::new(node.node.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
 
         add_running(node.node.clone(), Arc::clone(&run_node.routing_table)).await;
 
@@ -589,173 +594,5 @@ pub async fn run_create_network(updated_file_path: &str, count: u16) {
         eprintln!("Error saving nodes: {}", e);
     } else {
         println!("Saved updated nodes to {}", updated_file_path);
-    }
-}
-
-/// TESTS
-#[cfg(test)]
-mod sim_tests {
-    use std::net::SocketAddr;
-    use std::sync::Arc;
-    use rand::seq::IndexedRandom;
-    use kademlia::Kademlia;
-    use kademlia_structs::{KMessage, RoutingTable, Node};
-    use crate::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, SIM, add_running, remove_running};
-
-    async fn create_test_node(id: u128, port: u16) -> Kademlia {
-        let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
-
-        let mut node = Kademlia::new_with_sock(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
-
-        add_running(node_actual.clone(), Arc::clone(&node.routing_table)).await;
-
-        node
-    }
-
-    #[tokio::test]
-    async fn simulated_node_find_test() {
-        crate::init_socket_once().await;
-        let file_path = "../simulated_nodes_10000.json";
-
-        // Load nodes from JSON
-        match load_simulated_nodes(file_path).await {
-            Ok(nodes) => {
-
-                {
-                    SIM.lock().await.set_nodes(nodes.clone());
-                }
-
-                let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
-
-                {
-                    println!("NODE:\nID: {}", node1.node.lock().await.id);
-                }
-
-                let test_node_sock = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
-
-                let selected_port = 9000 + (nodes.len() / 2) as u16;
-
-                let node_random = nodes.choose(&mut rand::rng()).unwrap().clone();
-                let mut temp_node_selected = None;
-                {
-                    let temp_node = SIM.lock().await.get_node(SocketAddr::new("127.0.0.1".parse().unwrap(), selected_port)).await;
-                    match temp_node {
-                        Some(node_unlocked) => {
-                            temp_node_selected = Some(node_unlocked.lock().await.clone());
-                        }
-                        None => {}
-                    }
-                }
-
-                assert!(temp_node_selected.is_some(), "Could not retrieve Node with selected port");
-
-                let node_selected = temp_node_selected.unwrap();
-
-                println!("SEARCHING FOR:");
-                println!("ID: {}, Address: {}", node_selected.node.id, node_selected.node.address);
-                println!("ID: {}, Address: {}", node_random.node.id, node_random.node.address);
-
-                println!("BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock.clone().port());
-
-                node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock).await;
-
-                println!("Joined Network");
-
-                // Perform lookup
-                let found_nodes_selected = node1.iterative_find_node(Arc::clone(&node1.socket), node_selected.node.id).await;
-                let found_nodes_random = node1.iterative_find_node(Arc::clone(&node1.socket), node_random.node.id).await;
-
-                println!("Send Find Node");
-
-                println!("SEARCH FOR SELECTED NODE WITH PORT {} :: found_nodes: {:?}", selected_port, found_nodes_selected);
-                println!("SEARCH FOR RANDOM NODE WITH PORT {} :: found_nodes: {:?}", node_random.node.address.port(), found_nodes_random);
-                {
-                    println!("ROUTING TABLE:\n{}", node1.routing_table.lock().await.to_string().await);
-                }
-
-                remove_running(node1.node.lock().await.clone()).await;
-
-                assert_eq!(found_nodes_selected[0], node_selected.node, "Should find selected, and it should be first in the list");
-                assert_eq!(found_nodes_random[0], node_random.node, "Should find random node, and it should be first in the list");
-
-            }
-            Err(e) => {
-                eprintln!("Error loading nodes: {}", e);
-                assert!(false, "Could not load nodes");
-            },
-        }
-    }
-
-    #[tokio::test]
-    async fn simulated_node_store_test() {
-        crate::init_socket_once().await;
-        let file_path = "../simulated_nodes_10000.json";
-
-        // Load nodes from JSON
-        match load_simulated_nodes(file_path).await {
-            Ok(nodes) => {
-
-                {
-                    SIM.lock().await.set_nodes(nodes.clone());
-                }
-
-                let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
-                let mut node2 = create_test_node(rand::random::<u128>(), 6001).await;
-
-                {
-                    println!("NODE1:\nID: {}", node1.node.lock().await.id);
-                    println!("NODE2:\nID: {}", node2.node.lock().await.id);
-                }
-
-                let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
-                let test_node_sock2 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
-
-                println!("NODE1 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock1.clone().port());
-                println!("NODE2 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock2.clone().port());
-
-                node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
-                println!("Node1 Joined Network");
-                node2.join_network(get_global_socket().unwrap().clone(), &test_node_sock2).await;
-                println!("Node2 Joined Network");
-
-                let key = rand::random::<u128>();
-                let value = "PLEASE DEAR GOD LET THIS WORK".to_string();
-                println!("STORE:\nKey: {}, Value: {}", key, value);
-
-                // Perform store
-                let store_nodes = node1.store_value(Arc::clone(&node1.socket), key, value.clone()).await;
-                println!("Send Store");
-                assert_eq!(store_nodes.len(), 2, "Should have stored in 2 nodes");
-
-                // Perform search
-                let found_value_option = node2.iterative_find_value(Arc::clone(&node2.socket), key).await;
-                println!("Search Value");
-                assert!(found_value_option.is_some(), "Did not find value");
-                let found_value = found_value_option.unwrap();
-
-                remove_running(node1.node.lock().await.clone()).await;
-                remove_running(node2.node.lock().await.clone()).await;
-
-                assert_eq!(found_value, value, "Should find value and it should be the correct one.");
-
-                let mut updated_nodes = nodes.clone();
-                {
-                    let sim = SIM.lock().await;
-                    updated_nodes = sim.get_all_nodes().await;
-                }
-
-                // Save the modified nodes back to a new file
-                let new_file_path = "../updated_simulator_nodes_stored.json";
-                if let Err(e) = save_simulated_nodes(new_file_path, &updated_nodes).await {
-                    eprintln!("Error saving nodes: {}", e);
-                } else {
-                    println!("Saved updated nodes to {}", new_file_path);
-                }
-            }
-            Err(e) => {
-                eprintln!("Error loading nodes: {}", e);
-                assert!(false, "Could not load nodes");
-            },
-        }
     }
 }

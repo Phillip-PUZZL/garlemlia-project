@@ -6,6 +6,6 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0.218", features = ["derive"] }
 tokio = "1.43.0"
-kademlia = { path = "../kademlia" }
-kademlia-structs = { path = "../kademlia-structs" }
-chrono = "0.4.40"
+garlemlia-structs = { path = "../garlemlia-structs" }
+chrono = { version = "0.4.40", features = ["serde"] }
+rand = "0.9.0"

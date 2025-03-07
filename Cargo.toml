@@ -1,9 +1,9 @@
 [package]
-name = "masters"
+name = "garlemlia-project"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-kademlia = { path = "kademlia" }
-kademlia-simulator = { path = "kademlia-simulator" }
+garlemlia = { path = "garlemlia" }
+garlemlia-simulator = { path = "garlemlia-simulator" }
 tokio = { version = "1.43.0", features = ["full"] }

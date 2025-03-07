@@ -1,11 +1,11 @@
 [package]
-name = "kademlia-simulator"
+name = "garlemlia-simulator"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-kademlia = { path = "../kademlia" }
-kademlia-structs = { path = "../kademlia-structs" }
+garlemlia = { path = "../garlemlia" }
+garlemlia-structs = { path = "../garlemlia-structs" }
 tokio = { version = "1.43.0", features = ["full"] }
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.138"

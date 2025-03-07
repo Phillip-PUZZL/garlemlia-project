@@ -1,5 +1,5 @@
 [package]
-name = "kademlia-structs"
+name = "garlemlia-structs"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,5 +8,5 @@ tokio = { version = "1.43.0", features = ["full"] }
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.138"
 rand = "0.9.0"
-lazy_static = "1.5.0"
 async-trait = "0.1.86"
+chrono = { version = "0.4.40", features = ["serde"] }
