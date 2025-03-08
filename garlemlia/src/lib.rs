@@ -3,10 +3,10 @@ use std::net::{SocketAddr};
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex};
 use tokio::task;
-use garlemlia_structs::{Node, MessageChannel, DEFAULT_K, GMessage, GarlemliaMessage, RoutingTable, MAX_K, LOOKUP_ALPHA};
+use garlemlia_structs::{Node, MessageChannel, DEFAULT_K, GMessage, GarlemliaMessage, RoutingTable, LOOKUP_ALPHA};
+use garlic_cast::{GarlicCast};
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -17,6 +17,7 @@ pub struct Garlemlia {
     pub message_handler: Arc<Box<dyn GMessage>>,
     pub routing_table: Arc<Mutex<RoutingTable>>,
     pub data_store: Arc<Mutex<HashMap<u128, String>>>,
+    pub garlic: Arc<Mutex<GarlicCast>>,
     stop_signal: Arc<AtomicBool>,
     join_handle: Arc<Option<task::JoinHandle<()>>>,
 }
@@ -27,14 +28,18 @@ pub struct Garlemlia {
 impl Garlemlia {
     pub async fn new(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>) -> Self {
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
+        let socket = Arc::new(UdpSocket::bind(format!("{}:{}", address, port)).await.unwrap());
+
+        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(), Arc::new(msg_handler.clone()), vec![]);
 
         Self {
             node: Arc::new(Mutex::new(node)),
-            socket: Arc::new(UdpSocket::bind(format!("{}:{}", address, port)).await.unwrap()),
+            socket,
             receive_addr: format!("{address}:{port}").parse().unwrap(),
             message_handler: Arc::new(msg_handler),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
+            garlic: Arc::new(Mutex::new(garlic)),
             stop_signal: Arc::new(AtomicBool::new(false)),
             join_handle: Arc::new(None),
         }
@@ -43,6 +48,8 @@ impl Garlemlia {
     pub fn new_with_sock(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, socket: Arc<UdpSocket>) -> Self {
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
 
+        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(), Arc::new(msg_handler.clone()), vec![]);
+
         Self {
             node: Arc::new(Mutex::new(node)),
             socket: Arc::clone(&socket),
@@ -50,6 +57,7 @@ impl Garlemlia {
             message_handler: Arc::new(msg_handler),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
+            garlic: Arc::new(Mutex::new(garlic)),
             stop_signal: Arc::new(AtomicBool::new(false)),
             join_handle: Arc::new(None),
         }
@@ -71,6 +79,10 @@ impl Garlemlia {
             ds.insert(*i.0, i.1.clone());
         }
     }
+    pub async fn set_garlic_cast(&self, gc: GarlicCast) {
+        self.garlic.lock().await.update_from(gc).await;
+    }
+    
 
     async fn get_node(&self) -> Node {
         let node;
@@ -87,6 +99,7 @@ impl Garlemlia {
         let message_handler = Arc::clone(&self.message_handler);
         let routing_table = Arc::clone(&self.routing_table);
         let data_store = Arc::clone(&self.data_store);
+        let garlic = Arc::clone(&self.garlic);
         let stop_clone = Arc::clone(&self.stop_signal);
         println!("STARTING {}", socket.local_addr().unwrap());
 
@@ -200,7 +213,9 @@ impl Garlemlia {
                         }
 
                         GarlemliaMessage::Garlic { msg, sender } => {
-                            // TODO: Implement logic for garlic-cast messages
+                            let mut rt = routing_table.lock().await;
+                            rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
+                            garlic.lock().await.recv(sender, msg).await;
                         }
 
                         GarlemliaMessage::Ping { .. } => {
@@ -319,6 +334,11 @@ impl Garlemlia {
                 if let Ok(Some(nodes)) = task.await {
                     new_nodes.extend(nodes);
                 }
+            }
+
+            {
+                // Adds to list of known nodes
+                self.garlic.lock().await.update_known(new_nodes.clone()).await;
             }
 
             // Merge new nodes into our candidate set.

@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use async_trait::async_trait;
@@ -441,11 +441,21 @@ pub trait GMessage: Send + Sync {
     async fn send(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError>;
     async fn recv(&self, timeout_ms: u64, src: &SocketAddr) -> Result<GarlemliaMessage, MessageError>;
     fn clone_box(&self) -> Box<dyn GMessage>;
+
+    fn debug_fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "GMessage Trait Object")
+    }
 }
 
 impl Clone for Box<dyn GMessage> {
     fn clone(&self) -> Box<dyn GMessage> {
         self.clone_box()
+    }
+}
+
+impl Debug for dyn GMessage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        self.debug_fmt(f)
     }
 }
 
@@ -740,7 +750,8 @@ pub enum GarlicMessage {
     ResponseWithValidator { },
     RequestAlt { },
     RefreshAlt { },
-    UpdateAlt { }
+    UpdateAlt { },
+    AgreeAlt { },
 }
 
 impl GarlicMessage {
@@ -756,6 +767,7 @@ impl GarlicMessage {
             GarlicMessage::RequestAlt { .. } => {0}
             GarlicMessage::RefreshAlt { .. } => {0}
             GarlicMessage::UpdateAlt { .. } => {0}
+            GarlicMessage::AgreeAlt { .. } => {0}
         }
     }
 
@@ -771,6 +783,7 @@ impl GarlicMessage {
             GarlicMessage::RequestAlt { .. } => {None}
             GarlicMessage::RefreshAlt { .. } => {None}
             GarlicMessage::UpdateAlt { .. } => {None}
+            GarlicMessage::AgreeAlt { .. } => {None}
         }
     }
 

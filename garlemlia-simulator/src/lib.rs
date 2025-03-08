@@ -1,18 +1,17 @@
 use async_trait::async_trait;
-use garlemlia_structs::{KBucket, GMessage, GarlemliaMessage, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
+use garlemlia_structs::{KBucket, GMessage, GarlemliaMessage, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K, GarlicMessage, Clove};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use lazy_static::lazy_static;
 use once_cell::sync::OnceCell;
-use rand::prelude::IndexedRandom;
-use rand::Rng;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex};
 use garlemlia::Garlemlia;
+use garlic_cast::{CloveCache, GarlicCast, Proxy};
 
 #[derive(Debug, Clone)]
 pub struct Simulator {
@@ -146,27 +145,65 @@ impl SerializableRoutingTable {
     }
 }
 
+impl SerializableGarlicCast {
+    pub async fn from(garlic: GarlicCast) -> SerializableGarlicCast {
+        SerializableGarlicCast {
+            local_node: garlic.local_node,
+            known_nodes: garlic.known_nodes.lock().await.clone(),
+            proxies: garlic.proxies.lock().await.clone(),
+            cache: garlic.cache.lock().await.clone(),
+            collected_messages: garlic.collected_messages.lock().await.clone(),
+        }
+    }
+
+    pub fn to_garlic(self) -> GarlicCast {
+        GarlicCast {
+            socket: get_global_socket().unwrap(),
+            local_node: self.local_node,
+            message_handler: Arc::new(SimulatedMessageHandler::create(0)),
+            known_nodes: Arc::new(Mutex::new(self.known_nodes)),
+            proxies: Arc::new(Mutex::new(self.proxies)),
+            cache: Arc::new(Mutex::new(self.cache)),
+            collected_messages: Arc::new(Mutex::new(self.collected_messages))
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SerializableGarlicCast {
+    local_node: Node,
+    known_nodes: Vec<Node>,
+    proxies: VecDeque<Proxy>,
+    cache: CloveCache,
+    collected_messages: Vec<Clove>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
     pub id: u128,
     pub address: String,
     pub routing_table: SerializableRoutingTable,
-    pub data_store: HashMap<u128, String>
+    pub data_store: HashMap<u128, String>,
+    pub garlic: SerializableGarlicCast
 }
 
 #[derive(Debug, Clone)]
 pub struct SimulatedNode {
     pub node: Node,
     pub routing_table: Arc<Mutex<RoutingTable>>,
-    pub data_store: HashMap<u128, String>
+    pub data_store: HashMap<u128, String>,
+    pub garlic: GarlicCast
 }
 
 impl SimulatedNode {
     pub fn new(node: Node, rt: RoutingTable, ds: HashMap<u128, String>) -> SimulatedNode {
+        let garlic = GarlicCast::new(get_global_socket().unwrap().clone(), node.clone(), Arc::new(SimulatedMessageHandler::create(0)), vec![]);
+        
         SimulatedNode {
             node,
             routing_table: Arc::new(Mutex::new(rt)),
-            data_store: ds
+            data_store: ds,
+            garlic
         }
     }
 
@@ -275,7 +312,8 @@ impl SimulatedNode {
             }
 
             GarlemliaMessage::Garlic { msg, sender } => {
-                // TODO: Implement logic for garlic-cast messages
+                self.add_node(sender_node.clone()).await;
+                self.garlic.recv(sender, msg).await;
                 Err(None)
             }
 
@@ -454,7 +492,8 @@ async fn simulated_node_to_file(sim_node: SimulatedNode) -> FileNode {
         id: sim_node.node.id,
         address: sim_node.node.address.to_string(),
         routing_table: SerializableRoutingTable::from(sim_node.routing_table.lock().await.clone()).await,
-        data_store: sim_node.data_store
+        data_store: sim_node.data_store,
+        garlic: SerializableGarlicCast::from(sim_node.garlic).await
     }
 }
 
@@ -509,7 +548,8 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
         SIM.lock().await.create_node(SimulatedNode {
             node: nodes[0].node.clone(),
             routing_table: nodes[0].routing_table.clone(),
-            data_store: nodes[0].data_store.clone()
+            data_store: nodes[0].data_store.clone(),
+            garlic: nodes[0].garlic.clone()
         }).await;
     }
 
@@ -545,7 +585,8 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>) {
             SIM.lock().await.create_node(SimulatedNode {
                 node: node_actual.clone(),
                 routing_table: Arc::new(Mutex::new(rt.clone())),
-                data_store: run_node.data_store.lock().await.clone()
+                data_store: run_node.data_store.lock().await.clone(),
+                garlic: run_node.garlic.lock().await.clone()
             }).await;
         }
 
@@ -572,7 +613,8 @@ pub async fn create_random_simulated_nodes(count: u16) -> Vec<SimulatedNode> {
         simulated_nodes.push(SimulatedNode {
             node: node.clone(),
             routing_table: Arc::new(Mutex::new(RoutingTable {local_node: node.clone(), buckets: Arc::new(Mutex::new(HashMap::new()))})),
-            data_store: HashMap::new()
+            data_store: HashMap::new(),
+            garlic: GarlicCast::new(get_global_socket().unwrap(), node.clone(), Arc::new(SimulatedMessageHandler::create(0)), vec![])
         });
     }
 

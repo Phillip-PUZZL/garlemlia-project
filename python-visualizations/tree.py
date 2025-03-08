@@ -1,6 +1,10 @@
+import math
+
+import matplotlib
 import networkx as nx
 from collections import deque
 import matplotlib.pyplot as plt
+import numpy as np
 from networkx.drawing.nx_agraph import graphviz_layout
 
 class TreeNode:
@@ -64,6 +68,52 @@ def tree_to_graph(root):
 
     return g
 
+
+def count_leading_zeros(n):
+    """Counts the number of leading zeros in the binary representation of an integer.
+
+    Args:
+        n: The integer to count leading zeros from.
+
+    Returns:
+        The number of leading zeros in the binary representation of n.
+    """
+    if n == 0:
+        return 0
+    binary_representation = bin(n)[2:].zfill(128)  # Remove "0b" prefix
+    count = 0
+    for bit in binary_representation:
+        if bit == '0':
+            count += 1
+        else:
+            break
+    return count
+
+
+def bucket_index(node_id, check_node_id):
+    xor_distance = int(node_id, 2) ^ int(check_node_id, 2)
+
+    if xor_distance == 0:
+        return 0
+
+    return 127 - count_leading_zeros(xor_distance)
+
+
+def generate_colormap(N):
+    arr = np.arange(N)/N
+    N_up = int(math.ceil(N/7)*7)
+    arr.resize(N_up)
+    arr = arr.reshape(7,N_up//7).T.reshape(-1)
+    ret = matplotlib.cm.hsv(arr)
+    n = ret[:,3].size
+    a = n//2
+    b = n-a
+    for i in range(3):
+        ret[0:n//2,i] *= np.arange(0.2,1,0.8/a)
+    ret[n//2:,3] *= np.arange(1,0.1,-0.9/b)
+    return ret
+
+
 def compress_and_color(
     g,
     root_label="",
@@ -86,6 +136,8 @@ def compress_and_color(
     visited = set()
     prefix_to_compressed = {}   # Map original prefix -> compressed node ID
     global_idx = 0             # to create short names like n0, n1, etc.
+
+    colors = generate_colormap(128)
 
     def dfs_compress(prefix, parent_prefix):
         """
@@ -133,10 +185,11 @@ def compress_and_color(
         #  - Else if chain intersects all_inserted => "red"
         #  - else => "lightgray"
         chain_set = set(chain)
+        intersecting_values = chain_set.intersection(all_inserted)
         if node_id in chain_set:
             color = "blue"
-        elif chain_set.intersection(all_inserted):
-            color = "red"
+        elif intersecting_values:
+            color = colors[bucket_index(node_id, next(iter(intersecting_values)))]
         else:
             color = "lightgray"
 
@@ -189,7 +242,7 @@ def draw_compressed_tree(g, title="Compressed Tree"):
     plt.axis("off")
     plt.show()
 
-def create_colored_graph_128bit(node_id, node_ids_128bit):
+def create_colored_graph_128bit(node_id_bin, node_ids_128bit):
     """
     1) Build the raw tree from node_ids_128bit.
     2) Convert to Nx graph.
@@ -207,9 +260,9 @@ def create_colored_graph_128bit(node_id, node_ids_128bit):
     compressed_g = compress_and_color(
         raw_g,
         root_label="",   # empty prefix is the real root
-        node_id=node_id,
+        node_id=node_id_bin,
         all_inserted=all_inserted
     )
 
     # 4) Draw
-    draw_compressed_tree(compressed_g, title=f"{node_id} Routing Table")
+    draw_compressed_tree(compressed_g, title=f"{node_id_bin} Routing Table")
