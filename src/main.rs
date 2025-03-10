@@ -1,9 +1,94 @@
-#[tokio::main]
-async fn main() {
-    let test_file_path = "./test_nodes_loong_1.json";
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::time;
+use garlemlia::Garlemlia;
+use garlemlia_simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, save_simulated_nodes, SimulatedMessageHandler, SIM};
+use garlemlia_structs::{GMessage, Node, RoutingTable};
+
+async fn create_test_node(id: u128, port: u16) -> Garlemlia {
+    let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
+
+    let mut node = Garlemlia::new_with_sock(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone());
+
+    add_running(node_actual.clone(), Arc::clone(&node.routing_table)).await;
+
+    node
+}
+
+// TODO: Move this to the garlic_cast_tests file when testing of the test finishes XD
+async fn check_node_discover() {
+    init_socket_once().await;
+    let file_path = "./garlemlia-simulator/tests/test_nodes.json";
+
+    // Load nodes from JSON
+    match load_simulated_nodes(file_path).await {
+        Ok(nodes) => {
+
+            {
+                SIM.lock().await.set_nodes(nodes.clone());
+            }
+
+            let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
+
+            {
+                println!("NODE1:\nID: {}", node1.node.lock().await.id);
+            }
+
+            let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
+
+            println!("NODE1 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock1.clone().port());
+
+            node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
+            println!("Node1 Joined Network");
+
+            node1.garlic.lock().await.discover_proxies(60).await;
+
+            tokio::time::sleep(time::Duration::from_secs(1)).await;
+
+            remove_running(node1.node.lock().await.clone()).await;
+
+            let mut updated_nodes = nodes.clone();
+            {
+                let sim = SIM.lock().await;
+                updated_nodes = sim.get_all_nodes().await;
+            }
+
+            // Save the modified nodes back to a new file
+            let new_file_path = "./garlemlia-simulator/tests/test_nodes_stored.json";
+            if let Err(e) = save_simulated_nodes(new_file_path, &updated_nodes).await {
+                eprintln!("Error saving nodes: {}", e);
+            } else {
+                println!("Saved updated nodes to {}", new_file_path);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error loading nodes: {}", e);
+            assert!(false, "Could not load nodes");
+        },
+    }
+}
+
+async fn create_test_nodes() {
+    let test_file_path = "./garlemlia-simulator/tests/test_nodes.json";
     let nodes_to_create: usize = 10000;
     garlemlia_simulator::init_socket_once().await;
     garlemlia_simulator::run_create_network(test_file_path, nodes_to_create as u16).await;
+
+    // Load nodes from JSON
+    match garlemlia_simulator::load_simulated_nodes(test_file_path).await {
+        Ok(nodes) => {
+            assert_eq!(nodes.len(), nodes_to_create, "Could not load nodes");
+        }
+        Err(e) => {
+            eprintln!("Error loading nodes: {}", e);
+            assert!(false, "Could not load nodes");
+        },
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    check_node_discover().await;
 }
 
 // Chapter 1: Introduction

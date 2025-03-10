@@ -161,3 +161,54 @@ async fn simulated_node_store_test() {
         },
     }
 }
+
+#[tokio::test]
+async fn simulated_proxy_discovery() {
+    init_socket_once().await;
+    let file_path = "./tests/test_nodes.json";
+
+    // Load nodes from JSON
+    match load_simulated_nodes(file_path).await {
+        Ok(nodes) => {
+
+            {
+                SIM.lock().await.set_nodes(nodes.clone());
+            }
+
+            let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
+
+            {
+                println!("NODE1:\nID: {}", node1.node.lock().await.id);
+            }
+
+            let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
+
+            println!("NODE1 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock1.clone().port());
+
+            node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
+            println!("Node1 Joined Network");
+
+            node1.garlic.lock().await.discover_proxies(30).await;
+
+            remove_running(node1.node.lock().await.clone()).await;
+
+            let mut updated_nodes = nodes.clone();
+            {
+                let sim = SIM.lock().await;
+                updated_nodes = sim.get_all_nodes().await;
+            }
+
+            // Save the modified nodes back to a new file
+            let new_file_path = "./tests/test_nodes_stored.json";
+            if let Err(e) = save_simulated_nodes(new_file_path, &updated_nodes).await {
+                eprintln!("Error saving nodes: {}", e);
+            } else {
+                println!("Saved updated nodes to {}", new_file_path);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error loading nodes: {}", e);
+            assert!(false, "Could not load nodes");
+        },
+    }
+}

@@ -48,13 +48,15 @@ impl Garlemlia {
     pub fn new_with_sock(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, socket: Arc<UdpSocket>) -> Self {
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
 
-        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(), Arc::new(msg_handler.clone()), vec![]);
+        let message_handler = Arc::new(msg_handler);
+
+        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(), Arc::clone(&message_handler), vec![]);
 
         Self {
             node: Arc::new(Mutex::new(node)),
             socket: Arc::clone(&socket),
             receive_addr: format!("{address}:{port}").parse().unwrap(),
-            message_handler: Arc::new(msg_handler),
+            message_handler,
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
             garlic: Arc::new(Mutex::new(garlic)),

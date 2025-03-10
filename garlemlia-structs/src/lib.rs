@@ -710,8 +710,9 @@ pub struct Clove {
     pub sequence_number: u128,
     pub msg_fragment: Vec<u8>,
     pub key_fragment: Vec<u8>,
-    #[serde(with = "chrono::serde::ts_seconds")]
-    pub sent: DateTime<Utc>
+    pub sent: DateTime<Utc>,
+    pub index: u8,
+    pub ida_count: u8
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -739,7 +740,7 @@ pub enum GarlicMessage {
         sender: Node,
     },
     RequestProxy {
-
+        msg: String,
     },
     ProxyAgree {
         sequence_number: u128,

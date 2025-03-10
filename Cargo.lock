@@ -210,6 +210,8 @@ version = "0.1.0"
 dependencies = [
  "garlemlia",
  "garlemlia-simulator",
+ "garlemlia-structs",
+ "rand",
  "tokio",
 ]
 
@@ -218,6 +220,7 @@ name = "garlemlia-simulator"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "garlemlia",
  "garlemlia-structs",
  "garlic-cast",
