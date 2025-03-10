@@ -708,10 +708,10 @@ impl GarlemliaMessage {
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Clove {
     pub sequence_number: u128,
-    msg_fragment: String,
-    key_fragment: String,
+    pub msg_fragment: Vec<u8>,
+    pub key_fragment: Vec<u8>,
     #[serde(with = "chrono::serde::ts_seconds")]
-    sent: DateTime<Utc>
+    pub sent: DateTime<Utc>
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -738,20 +738,44 @@ pub enum GarlicMessage {
     IsAlive {
         sender: Node,
     },
+    RequestProxy {
+
+    },
     ProxyAgree {
         sequence_number: u128,
         updated_sequence_number: u128,
         hops: u128,
         clove: Clove
     },
-    SearchOverlay { },
-    SearchGarlemlia { },
-    ResponseDirect { },
-    ResponseWithValidator { },
-    RequestAlt { },
-    RefreshAlt { },
-    UpdateAlt { },
-    AgreeAlt { },
+    SearchOverlay {
+        search_term: String,
+    },
+    SearchGarlemlia {
+        key: u128
+    },
+    ResponseDirect {
+        data: Vec<u8>
+    },
+    ResponseWithValidator {
+        data: Vec<u8>
+    },
+    RequestAlt {
+        alt_sequence_number: u128,
+        next_hop: Node,
+        last_hop: Node
+    },
+    RefreshAlt {
+        sequence_number: u128
+    },
+    UpdateAlt {
+        sequence_number: u128,
+        alt_sequence_number: u128,
+        alt: Node
+    },
+    AgreeAlt {
+        alt_sequence_number: u128,
+        sender: Node
+    },
 }
 
 impl GarlicMessage {
@@ -759,6 +783,7 @@ impl GarlicMessage {
         match self {
             GarlicMessage::Forward { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::IsAlive { .. } => {0}
+            GarlicMessage::RequestProxy { .. } => {0}
             GarlicMessage::ProxyAgree { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::SearchOverlay { .. } => {0}
             GarlicMessage::SearchGarlemlia { .. } => {0}
@@ -775,6 +800,7 @@ impl GarlicMessage {
         match self {
             GarlicMessage::Forward { clove, .. } => {Some(clove.clone().clone())}
             GarlicMessage::IsAlive { .. } => {None}
+            GarlicMessage::RequestProxy { .. } => {None}
             GarlicMessage::ProxyAgree { clove, .. } => {Some(clove.clone())}
             GarlicMessage::SearchOverlay { .. } => {None}
             GarlicMessage::SearchGarlemlia { .. } => {None}
