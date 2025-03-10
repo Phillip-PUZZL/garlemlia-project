@@ -1,17 +1,17 @@
 use async_trait::async_trait;
-use garlemlia_structs::{KBucket, GMessage, GarlemliaMessage, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K, GarlicMessage, Clove};
+use garlemlia::Garlemlia;
+use garlemlia_structs::{Clove, GMessage, GarlemliaMessage, KBucket, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
+use garlic_cast::{CloveCache, GarlicCast, Proxy};
+use lazy_static::lazy_static;
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use lazy_static::lazy_static;
-use once_cell::sync::OnceCell;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex};
-use garlemlia::Garlemlia;
-use garlic_cast::{CloveCache, GarlicCast, Proxy};
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct Simulator {
@@ -173,7 +173,7 @@ impl SerializableGarlicCast {
 pub struct SerializableGarlicCast {
     local_node: Node,
     known_nodes: Vec<Node>,
-    proxies: VecDeque<Proxy>,
+    proxies: Vec<Proxy>,
     cache: CloveCache,
     collected_messages: Vec<Clove>,
 }
