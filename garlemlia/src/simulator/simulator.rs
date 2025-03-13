@@ -2,10 +2,9 @@ use crate::garlemlia::garlemlia;
 use crate::garlemlia_structs::garlemlia_structs;
 use crate::garlic_cast::garlic_cast;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use garlemlia::Garlemlia;
-use garlemlia_structs::{Clove, CloveData, CloveNode, GMessage, GarlemliaMessage, GarlicMessage, KBucket, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
-use garlic_cast::{CloveCache, GarlicCast, Proxy};
+use garlemlia_structs::{GMessage, GarlemliaMessage, GarlicMessage, KBucket, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
+use garlic_cast::GarlicCast;
 use lazy_static::lazy_static;
 use once_cell::sync::OnceCell;
 use rand::prelude::IndexedRandom;
@@ -22,6 +21,8 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use crate::garlemlia_structs::garlemlia_structs::SerializableRoutingTable;
+use crate::garlic_cast::garlic_cast::SerializableGarlicCast;
 
 #[derive(Debug, Clone)]
 pub struct Simulator {
@@ -71,7 +72,7 @@ impl Simulator {
     // TODO: After done, need to create an event loop which randomly connects and disconnects
     // TODO: existing Node's and also creates random new nodes to join the network.
     pub fn node_is_alive(&self, _address: SocketAddr) -> bool {
-        rand::random_bool(0.8)
+        true
     }
 
     pub fn add_fail(&mut self) {
@@ -134,142 +135,6 @@ pub fn get_global_socket() -> Option<Arc<UdpSocket>> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableRoutingTable {
-    pub local_node: Node,
-    pub buckets: HashMap<u8, KBucket>
-}
-
-impl SerializableRoutingTable {
-    pub async fn from(routing_table: RoutingTable) -> SerializableRoutingTable {
-        SerializableRoutingTable {
-            local_node: routing_table.local_node,
-            buckets: routing_table.buckets.lock().await.clone(),
-        }
-    }
-
-    pub fn to_routing_table(self) -> RoutingTable {
-        RoutingTable {
-            local_node: self.local_node,
-            buckets: Arc::new(Mutex::new(self.buckets))
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SerializableCloveCache {
-    cloves: HashMap<u128, CloveData>,
-    next_hop_key: HashMap<u32, CloveNode>,
-    next_hop_val: HashMap<u32, Option<CloveNode>>,
-    alt_nodes_key: HashMap<u32, CloveNode>,
-    alt_nodes_val: HashMap<u32, CloveNode>,
-    associations: HashMap<u128, Vec<CloveNode>>,
-    seen_last: HashMap<u128, DateTime<Utc>>,
-    my_alt_nodes: HashMap<u128, CloveNode>
-}
-
-impl SerializableCloveCache {
-    pub fn from(cache: CloveCache) -> SerializableCloveCache {
-        let mut next_hop_key = HashMap::new();
-        let mut next_hop_val = HashMap::new();
-        let mut alt_nodes_key = HashMap::new();
-        let mut alt_nodes_val = HashMap::new();
-
-        let mut index = 0;
-        for info in cache.next_hop.iter() {
-            next_hop_key.insert(index, info.0.clone());
-            next_hop_val.insert(index, info.1.clone());
-
-            index += 1;
-        }
-
-        index = 0;
-        for info in cache.alt_nodes.iter() {
-            alt_nodes_key.insert(index, info.0.clone());
-            alt_nodes_val.insert(index, info.1.clone());
-
-            index += 1;
-        }
-
-        SerializableCloveCache {
-            cloves: cache.cloves,
-            next_hop_key,
-            next_hop_val,
-            alt_nodes_key,
-            alt_nodes_val,
-            associations: cache.associations,
-            seen_last: cache.seen_last,
-            my_alt_nodes: cache.my_alt_nodes,
-        }
-    }
-
-    pub fn to_clove_cache(self) -> CloveCache {
-        let mut next_hop = HashMap::new();
-        let mut alt_nodes = HashMap::new();
-
-        for entry in self.next_hop_key.iter() {
-            let val = self.next_hop_val.get(entry.0).unwrap().clone();
-            next_hop.insert(entry.1.clone(), val);
-        }
-
-        for entry in self.alt_nodes_key.iter() {
-            let val = self.alt_nodes_val.get(entry.0).unwrap().clone();
-            alt_nodes.insert(entry.1.clone(), val);
-        }
-
-        CloveCache {
-            cloves: self.cloves,
-            next_hop,
-            alt_nodes,
-            associations: self.associations,
-            seen_last: self.seen_last,
-            my_alt_nodes: self.my_alt_nodes,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SerializableGarlicCast {
-    local_node: Node,
-    known_nodes: Vec<Node>,
-    proxies: Vec<Proxy>,
-    cache: SerializableCloveCache,
-    collected_messages: Vec<Clove>,
-    pub public_key: String,
-    pub private_key: String,
-    pub starting_hops: HashMap<u128, u8>,
-}
-
-impl SerializableGarlicCast {
-    pub async fn from(garlic: GarlicCast) -> SerializableGarlicCast {
-        SerializableGarlicCast {
-            local_node: garlic.local_node.clone(),
-            known_nodes: garlic.known_nodes.lock().await.clone(),
-            proxies: garlic.proxies.lock().await.clone(),
-            cache: SerializableCloveCache::from(garlic.cache.lock().await.clone()),
-            collected_messages: garlic.collected_messages.lock().await.clone(),
-            public_key: garlic.public_key.unwrap().to_public_key_pem(rsa::pkcs8::LineEnding::LF).unwrap(),
-            private_key: garlic.private_key.unwrap().to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap().to_string(),
-            starting_hops: garlic.starting_hops.clone(),
-        }
-    }
-
-    pub fn to_garlic(self) -> GarlicCast {
-        GarlicCast {
-            socket: get_global_socket().unwrap(),
-            local_node: self.local_node,
-            message_handler: Arc::new(SimulatedMessageHandler::create(0)),
-            known_nodes: Arc::new(Mutex::new(self.known_nodes)),
-            proxies: Arc::new(Mutex::new(self.proxies)),
-            cache: Arc::new(Mutex::new(self.cache.to_clove_cache())),
-            collected_messages: Arc::new(Mutex::new(self.collected_messages)),
-            public_key: Some(RsaPublicKey::from_public_key_pem(&*self.public_key).unwrap()),
-            private_key: Some(RsaPrivateKey::from_pkcs8_pem(&*self.private_key).unwrap()),
-            starting_hops: self.starting_hops
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
     pub id: u128,
     pub address: String,
@@ -312,7 +177,7 @@ impl SimulatedNode {
         let mut rt = self.routing_table.lock().await;
         let index = rt.bucket_index(node.clone().id);
         if !rt.check_and_update_bucket(node.clone(), index).await {
-            let mut locked_buckets = rt.buckets.lock().await;
+            let mut locked_buckets = rt.buckets().await;
             let bucket = locked_buckets.get_mut(&index).unwrap();
             if let Some(lru_node) = bucket.nodes.front().cloned() {
                 let mut is_alive = false;
@@ -422,14 +287,14 @@ impl SimulatedNode {
 
                 if is_alive {
                     self.add_node(sender_node.clone()).await;
-                    let sender_clone = sender.clone();
+                    let sender_clone = sender_node.clone();
                     let msg_clone = msg.clone();
                     let garlic = Arc::clone(&self.garlic);
 
                     tokio::spawn(async move {
                         let _ = garlic.lock().await.recv(sender_clone, msg_clone).await;
                     });
-                    return Ok(GarlemliaMessage::Garlic { msg: GarlicMessage::IsAlive { sender: sender.clone() }, sender })
+                    return Ok(GarlemliaMessage::Garlic { msg: GarlicMessage::IsAlive { sender: self.node.clone() }, sender: self.node.clone() })
                 }
                 Err(Some(MessageError::Timeout))
             }
@@ -534,7 +399,7 @@ impl GMessage for SimulatedMessageHandler {
                                     let mut rt = running_table.get_mut(&from_node).unwrap().routing_table.lock().await;
                                     let index = rt.bucket_index(sender.clone().id);
                                     if !rt.check_and_update_bucket(sender.clone(), index).await {
-                                        let mut locked_buckets = rt.buckets.lock().await;
+                                        let mut locked_buckets = rt.buckets().await;
                                         let bucket = locked_buckets.get_mut(&index).unwrap();
                                         if let Some(lru_node) = bucket.nodes.front().cloned() {
                                             let mut is_alive = false;
@@ -869,7 +734,7 @@ pub async fn create_random_simulated_nodes(count: u16) -> Vec<SimulatedNode> {
         let node = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + i)};
         simulated_nodes.push(SimulatedNode {
             node: node.clone(),
-            routing_table: Arc::new(Mutex::new(RoutingTable {local_node: node.clone(), buckets: Arc::new(Mutex::new(HashMap::new()))})),
+            routing_table: Arc::new(Mutex::new(RoutingTable::new(node.clone()))),
             data_store: HashMap::new(),
             garlic: Arc::new(Mutex::new(GarlicCast::new(get_global_socket().unwrap(), node.clone(), Arc::new(SimulatedMessageHandler::create(0)), vec![], None, None)))
         });

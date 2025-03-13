@@ -1,12 +1,11 @@
-use garlemlia::garlemlia_structs::garlemlia_structs;
+use garlemlia::garlemlia_structs::garlemlia_structs::CloveMessage;
 use garlemlia::garlic_cast::garlic_cast;
 
-use garlemlia_structs::{GarlicMessage};
 use garlic_cast::GarlicCast;
 
 #[tokio::test]
 async fn test_erasure_code_striping() {
-    let msg = GarlicMessage::SearchOverlay {
+    let msg = CloveMessage::SearchOverlay {
         search_term: "Will proxy?".to_string(),
     };
 

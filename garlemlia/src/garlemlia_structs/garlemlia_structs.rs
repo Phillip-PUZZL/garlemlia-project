@@ -125,11 +125,33 @@ impl KBucket {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableRoutingTable {
+    pub local_node: Node,
+    pub buckets: HashMap<u8, KBucket>
+}
+
+impl SerializableRoutingTable {
+    pub async fn from(routing_table: RoutingTable) -> SerializableRoutingTable {
+        SerializableRoutingTable {
+            local_node: routing_table.local_node,
+            buckets: routing_table.buckets.lock().await.clone(),
+        }
+    }
+
+    pub fn to_routing_table(self) -> RoutingTable {
+        RoutingTable {
+            local_node: self.local_node,
+            buckets: Arc::new(Mutex::new(self.buckets))
+        }
+    }
+}
+
 // TODO: Implement last_seen information for nodes in routing table
 #[derive(Debug, Clone)]
 pub struct RoutingTable {
-    pub local_node: Node,
-    pub buckets: Arc<Mutex<HashMap<u8, KBucket>>>
+    local_node: Node,
+    buckets: Arc<Mutex<HashMap<u8, KBucket>>>
 }
 
 impl RoutingTable {
@@ -731,27 +753,18 @@ pub struct CloveNode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub enum GarlicMessage {
-    Forward {
-        sequence_number: u128,
-        clove: Clove
-    },
-    IsAlive {
-        sender: Node,
-    },
+pub enum CloveMessage {
     RequestProxy {
         msg: String,
         public_key: String,
     },
-    ProxyAgree {
-        sequence_number: u128,
-        updated_sequence_number: u128,
-        hops: u128,
-        clove: Clove
-    },
     ProxyInfo {
         public_key: String,
-        starting_hops: u8
+        starting_hops: u16
+    },
+    ProxyRouteInfo {
+        neighbor_1_hops: u16,
+        neighbor_2_hops: u16
     },
     SearchOverlay {
         search_term: String,
@@ -764,6 +777,23 @@ pub enum GarlicMessage {
     },
     ResponseWithValidator {
         data: Vec<u8>
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub enum GarlicMessage {
+    Forward {
+        sequence_number: u128,
+        clove: Clove
+    },
+    IsAlive {
+        sender: Node,
+    },
+    ProxyAgree {
+        sequence_number: u128,
+        updated_sequence_number: u128,
+        hops: u16,
+        clove: Clove
     },
     RequestAlt {
         alt_sequence_number: u128,
@@ -789,13 +819,7 @@ impl GarlicMessage {
         match self {
             GarlicMessage::Forward { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::IsAlive { .. } => {0}
-            GarlicMessage::RequestProxy { .. } => {0}
             GarlicMessage::ProxyAgree { sequence_number, .. } => {sequence_number.clone()}
-            GarlicMessage::ProxyInfo { .. } => {0}
-            GarlicMessage::SearchOverlay { .. } => {0}
-            GarlicMessage::SearchGarlemlia { .. } => {0}
-            GarlicMessage::ResponseDirect { .. } => {0}
-            GarlicMessage::ResponseWithValidator { .. } => {0}
             GarlicMessage::RequestAlt { .. } => {0}
             GarlicMessage::RefreshAlt { .. } => {0}
             GarlicMessage::UpdateAlt { .. } => {0}
@@ -807,13 +831,7 @@ impl GarlicMessage {
         match self {
             GarlicMessage::Forward { clove, .. } => {Some(clove.clone().clone())}
             GarlicMessage::IsAlive { .. } => {None}
-            GarlicMessage::RequestProxy { .. } => {None}
             GarlicMessage::ProxyAgree { clove, .. } => {Some(clove.clone())}
-            GarlicMessage::ProxyInfo { .. } => {None}
-            GarlicMessage::SearchOverlay { .. } => {None}
-            GarlicMessage::SearchGarlemlia { .. } => {None}
-            GarlicMessage::ResponseDirect { .. } => {None}
-            GarlicMessage::ResponseWithValidator { .. } => {None}
             GarlicMessage::RequestAlt { .. } => {None}
             GarlicMessage::RefreshAlt { .. } => {None}
             GarlicMessage::UpdateAlt { .. } => {None}

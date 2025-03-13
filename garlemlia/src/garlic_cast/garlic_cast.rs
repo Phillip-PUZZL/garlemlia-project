@@ -4,12 +4,12 @@ use bincode;
 use chrono::{DateTime, Utc};
 use cipher::generic_array::GenericArray;
 use cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
-use garlemlia_structs::{Clove, CloveData, CloveNode, GMessage, GarlemliaMessage, GarlicMessage, MessageError, Node};
+use garlemlia_structs::{Clove, CloveData, CloveNode, GMessage, GarlemliaMessage, GarlicMessage, CloveMessage, MessageError, Node};
 use rand::random_bool;
 use rand::seq::IndexedRandom;
 use rand::{rng, RngCore};
 use reed_solomon_erasure::galois_8::ReedSolomon;
-use rsa::pkcs8::EncodePublicKey;
+use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;
@@ -17,17 +17,90 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use crate::simulator::simulator::{get_global_socket, SimulatedMessageHandler};
 
 pub const FORWARD_P: f64 = 0.95;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SerializableCloveCache {
+    cloves: HashMap<u128, CloveData>,
+    next_hop_key: HashMap<u32, CloveNode>,
+    next_hop_val: HashMap<u32, Option<CloveNode>>,
+    alt_nodes_key: HashMap<u32, CloveNode>,
+    alt_nodes_val: HashMap<u32, CloveNode>,
+    associations: HashMap<u128, Vec<CloveNode>>,
+    seen_last: HashMap<u128, DateTime<Utc>>,
+    my_alt_nodes: HashMap<u128, CloveNode>
+}
+
+impl SerializableCloveCache {
+    pub fn from(cache: CloveCache) -> SerializableCloveCache {
+        let mut next_hop_key = HashMap::new();
+        let mut next_hop_val = HashMap::new();
+        let mut alt_nodes_key = HashMap::new();
+        let mut alt_nodes_val = HashMap::new();
+
+        let mut index = 0;
+        for info in cache.next_hop.iter() {
+            next_hop_key.insert(index, info.0.clone());
+            next_hop_val.insert(index, info.1.clone());
+
+            index += 1;
+        }
+
+        index = 0;
+        for info in cache.alt_nodes.iter() {
+            alt_nodes_key.insert(index, info.0.clone());
+            alt_nodes_val.insert(index, info.1.clone());
+
+            index += 1;
+        }
+
+        SerializableCloveCache {
+            cloves: cache.cloves,
+            next_hop_key,
+            next_hop_val,
+            alt_nodes_key,
+            alt_nodes_val,
+            associations: cache.associations,
+            seen_last: cache.seen_last,
+            my_alt_nodes: cache.my_alt_nodes,
+        }
+    }
+
+    pub fn to_clove_cache(self) -> CloveCache {
+        let mut next_hop = HashMap::new();
+        let mut alt_nodes = HashMap::new();
+
+        for entry in self.next_hop_key.iter() {
+            let val = self.next_hop_val.get(entry.0).unwrap().clone();
+            next_hop.insert(entry.1.clone(), val);
+        }
+
+        for entry in self.alt_nodes_key.iter() {
+            let val = self.alt_nodes_val.get(entry.0).unwrap().clone();
+            alt_nodes.insert(entry.1.clone(), val);
+        }
+
+        CloveCache {
+            cloves: self.cloves,
+            next_hop,
+            alt_nodes,
+            associations: self.associations,
+            seen_last: self.seen_last,
+            my_alt_nodes: self.my_alt_nodes,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CloveCache {
-    pub cloves: HashMap<u128, CloveData>,
-    pub next_hop: HashMap<CloveNode, Option<CloveNode>>,
-    pub alt_nodes: HashMap<CloveNode, CloveNode>,
-    pub associations: HashMap<u128, Vec<CloveNode>>,
-    pub seen_last: HashMap<u128, DateTime<Utc>>,
-    pub my_alt_nodes: HashMap<u128, CloveNode>
+    cloves: HashMap<u128, CloveData>,
+    next_hop: HashMap<CloveNode, Option<CloveNode>>,
+    alt_nodes: HashMap<CloveNode, CloveNode>,
+    associations: HashMap<u128, Vec<CloveNode>>,
+    seen_last: HashMap<u128, DateTime<Utc>>,
+    my_alt_nodes: HashMap<u128, CloveNode>
 }
 
 impl CloveCache {
@@ -83,10 +156,10 @@ impl CloveCache {
 
     pub fn insert_updated_association(&mut self, sequence_number: u128, new_sequence_number: u128) {
         if self.associations.contains_key(&sequence_number) {
-            let associations = self.associations.remove(&sequence_number).unwrap();
+            let associations = self.associations.get(&sequence_number).unwrap();
             self.associations.insert(new_sequence_number, associations.clone());
         } else {
-            self.associations.insert(sequence_number, vec![]);
+            self.associations.insert(new_sequence_number, vec![]);
         }
     }
 
@@ -99,6 +172,21 @@ impl CloveCache {
 
         if let Some(next_hop) = next_hop {
             self.insert_association(node.sequence_number, next_hop);
+        }
+    }
+
+    pub fn update_next_hop(&mut self, node: CloveNode, next_hop: Option<CloveNode>) {
+        let prev_next = self.next_hop.remove(&node.clone());
+        self.next_hop.insert(node.clone(), next_hop.clone());
+
+        if let Some(previous_wrapped) = prev_next {
+            if let Some(previous) = previous_wrapped {
+                let associations = self.associations.get_mut(&node.sequence_number).unwrap();
+                associations.retain(|x| *x != previous);
+                if let Some(next_hop) = next_hop {
+                    self.insert_association(node.sequence_number, next_hop);
+                }
+            }
         }
     }
 
@@ -231,8 +319,8 @@ impl CloveCache {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct Proxy {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SerializableProxy {
     sequence_number: u128,
     neighbor_1: Node,
     neighbor_2: Node,
@@ -243,18 +331,121 @@ pub struct Proxy {
     used_last: DateTime<Utc>
 }
 
+impl SerializableProxy {
+    pub fn from(proxy: Proxy) -> SerializableProxy {
+        SerializableProxy {
+            sequence_number: proxy.sequence_number,
+            neighbor_1: proxy.neighbor_1,
+            neighbor_2: proxy.neighbor_2,
+            neighbor_1_hops: proxy.neighbor_1_hops,
+            neighbor_2_hops: proxy.neighbor_2_hops,
+            public_key: proxy.public_key.to_public_key_pem(rsa::pkcs8::LineEnding::LF).unwrap(),
+            used_last: proxy.used_last
+        }
+    }
+
+    pub fn to_proxy(self) -> Proxy {
+        Proxy {
+            sequence_number: self.sequence_number,
+            neighbor_1: self.neighbor_1,
+            neighbor_2: self.neighbor_2,
+            neighbor_1_hops: self.neighbor_1_hops,
+            neighbor_2_hops: self.neighbor_2_hops,
+            public_key: RsaPublicKey::from_public_key_pem(&*self.public_key).unwrap(),
+            used_last: self.used_last,
+        }
+    }
+
+    pub fn vec_to_serializable(proxies: Vec<Proxy>) -> Vec<SerializableProxy> {
+        let mut proxies_serial = vec![];
+
+        for proxy in proxies {
+            proxies_serial.push(SerializableProxy::from(proxy));
+        }
+
+        proxies_serial
+    }
+
+    pub fn vec_to_proxy(proxies_serial: Vec<SerializableProxy>) -> Vec<Proxy> {
+        let mut proxies = vec![];
+
+        for proxy in proxies_serial {
+            proxies.push(proxy.to_proxy());
+        }
+
+        proxies
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Proxy {
+    sequence_number: u128,
+    neighbor_1: Node,
+    neighbor_2: Node,
+    neighbor_1_hops: u16,
+    neighbor_2_hops: u16,
+    public_key: RsaPublicKey,
+    used_last: DateTime<Utc>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SerializableGarlicCast {
+    local_node: Node,
+    pub known_nodes: Vec<Node>,
+    proxies: Vec<SerializableProxy>,
+    partial_proxies: HashMap<u128, Node>,
+    cache: SerializableCloveCache,
+    collected_messages: HashMap<u128, Vec<GarlicMessage>>,
+    pub public_key: String,
+    pub private_key: String,
+    pub starting_hops: HashMap<u128, u8>,
+}
+
+impl SerializableGarlicCast {
+    pub async fn from(garlic: GarlicCast) -> SerializableGarlicCast {
+        SerializableGarlicCast {
+            local_node: garlic.local_node.clone(),
+            known_nodes: garlic.known_nodes.lock().await.clone(),
+            proxies: SerializableProxy::vec_to_serializable(garlic.proxies.lock().await.clone()),
+            partial_proxies: garlic.partial_proxies.lock().await.clone(),
+            cache: SerializableCloveCache::from(garlic.cache.lock().await.clone()),
+            collected_messages: garlic.collected_messages.lock().await.clone(),
+            public_key: garlic.public_key.unwrap().to_public_key_pem(rsa::pkcs8::LineEnding::LF).unwrap(),
+            private_key: garlic.private_key.unwrap().to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap().to_string(),
+            starting_hops: garlic.starting_hops.clone(),
+        }
+    }
+
+    pub fn to_garlic(self) -> GarlicCast {
+        GarlicCast {
+            socket: get_global_socket().unwrap(),
+            local_node: self.local_node,
+            message_handler: Arc::new(SimulatedMessageHandler::create(0)),
+            known_nodes: Arc::new(Mutex::new(self.known_nodes)),
+            proxies: Arc::new(Mutex::new(SerializableProxy::vec_to_proxy(self.proxies.clone()))),
+            partial_proxies: Arc::new(Mutex::new(self.partial_proxies)),
+            cache: Arc::new(Mutex::new(self.cache.to_clove_cache())),
+            collected_messages: Arc::new(Mutex::new(self.collected_messages)),
+            public_key: Some(RsaPublicKey::from_public_key_pem(&*self.public_key).unwrap()),
+            private_key: Some(RsaPrivateKey::from_pkcs8_pem(&*self.private_key).unwrap()),
+            starting_hops: self.starting_hops
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GarlicCast {
-    pub socket: Arc<UdpSocket>,
-    pub local_node: Node,
-    pub message_handler: Arc<Box<dyn GMessage>>,
+    socket: Arc<UdpSocket>,
+    local_node: Node,
+    message_handler: Arc<Box<dyn GMessage>>,
     pub known_nodes: Arc<Mutex<Vec<Node>>>,
-    pub proxies: Arc<Mutex<Vec<Proxy>>>,
-    pub cache: Arc<Mutex<CloveCache>>,
-    pub collected_messages: Arc<Mutex<Vec<Clove>>>,
-    pub public_key: Option<RsaPublicKey>,
-    pub private_key: Option<RsaPrivateKey>,
-    pub starting_hops: HashMap<u128, u8>,
+    proxies: Arc<Mutex<Vec<Proxy>>>,
+    partial_proxies: Arc<Mutex<HashMap<u128, Node>>>,
+    cache: Arc<Mutex<CloveCache>>,
+    collected_messages: Arc<Mutex<HashMap<u128, Vec<GarlicMessage>>>>,
+    public_key: Option<RsaPublicKey>,
+    private_key: Option<RsaPrivateKey>,
+    starting_hops: HashMap<u128, u8>,
 }
 
 impl GarlicCast {
@@ -265,8 +456,9 @@ impl GarlicCast {
             message_handler,
             known_nodes: Arc::new(Mutex::new(known_nodes)),
             proxies: Arc::new(Mutex::new(Vec::new())),
+            partial_proxies: Arc::new(Mutex::new(HashMap::new())),
             cache: Arc::new(Mutex::new(CloveCache::new())),
-            collected_messages: Arc::new(Mutex::new(Vec::new())),
+            collected_messages: Arc::new(Mutex::new(HashMap::new())),
             public_key,
             private_key,
             starting_hops: HashMap::new(),
@@ -300,19 +492,6 @@ impl GarlicCast {
         known_nodes.dedup();
     }
 
-    async fn add_proxy(&self, node: Node) {
-        // todo()
-    }
-
-    async fn remove_proxy(&self, node: Node) {
-        // todo()
-    }
-
-    async fn is_proxy(&self, node: Node) -> bool {
-        // todo()
-        false
-    }
-
     async fn in_cache(&self, sequence_number: u128) -> bool {
         let cache = self.cache.lock().await;
         let cache_info = cache.cloves.get(&sequence_number);
@@ -332,7 +511,7 @@ impl GarlicCast {
 
         let sequence_number = rand::random::<u128>();
 
-        let msg = GarlicMessage::RequestProxy {
+        let msg = CloveMessage::RequestProxy {
             msg: "Will proxy?".to_string(),
             public_key: self.public_key.clone().unwrap().to_public_key_pem(rsa::pkcs8::LineEnding::LF).unwrap()
         };
@@ -376,8 +555,7 @@ impl GarlicCast {
 
                     return match response {
                         Ok(_) => {
-                            // TODO: Manage adding these nodes to the clove cache
-                            Ok(true)
+                            Ok(temp_node)
                         }
                         _ => {
                             cloves_inside.lock().await.insert(0, clove);
@@ -392,7 +570,18 @@ impl GarlicCast {
                 match task.await {
                     Ok(val) => {
                         match val {
-                            Ok(_) => {
+                            Ok(node_success) => {
+                                let new_clove = CloveNode {
+                                    sequence_number,
+                                    node: node_success,
+                                };
+
+                                let mut cache = self.cache.lock().await;
+                                cache.insert_next_hop(new_clove.clone(), None);
+                                // Insert associations
+                                cache.insert_association(sequence_number, new_clove.clone());
+                                // Insert seen last
+                                cache.seen(sequence_number);
                                 total_sent += 1;
                             }
                             Err(e) => {
@@ -401,14 +590,14 @@ impl GarlicCast {
                         }
                     }
                     Err(e) => {
-                        println!("This should not happen: GarlicCast::discover_proxies():1 : {}", e);
+                        println!("{}: This should not happen: GarlicCast::discover_proxies():1 : {}", self.local_node.address, e);
                     }
                 }
             }
         }
     }
 
-    pub async fn get_message_from_cloves(clove_1: Clove, clove_2: Clove) -> GarlicMessage {
+    pub async fn get_message_from_cloves(clove_1: Clove, clove_2: Clove) -> CloveMessage {
         let data_shards = 2usize;
         let parity_shards: usize = clove_1.ida_count as usize - data_shards;
 
@@ -459,12 +648,12 @@ impl GarlicCast {
         
         let decrypted_bytes = decrypted_padded[..decrypted_padded.len() - pad_len].to_vec();
 
-        let final_msg: GarlicMessage = bincode::deserialize(&decrypted_bytes).unwrap();
+        let final_msg: CloveMessage = bincode::deserialize(&decrypted_bytes).unwrap();
         
         final_msg
     }
 
-    pub async fn generate_cloves(msg: GarlicMessage, count: u8, sequence_number: u128) -> Vec<Clove> {
+    pub async fn generate_cloves(msg: CloveMessage, count: u8, sequence_number: u128) -> Vec<Clove> {
         let mut cloves = vec![];
 
         let mut count_actual = count;
@@ -559,7 +748,7 @@ impl GarlicCast {
             count_actual = 2;
         }
 
-        let msg = GarlicMessage::SearchOverlay {
+        let msg = CloveMessage::SearchOverlay {
             search_term: req.clone(),
         };
 
@@ -649,7 +838,7 @@ impl GarlicCast {
                         }
                     }
                     Err(e) => {
-                        println!("This should not happen: GarlicCast::send_search_overlay():1 : {}", e);
+                        println!("{}: This should not happen: GarlicCast::send_search_overlay():1 : {}", self.local_node.address, e);
                     }
                 }
             }
@@ -657,7 +846,7 @@ impl GarlicCast {
     }
     
     pub async fn send_search_kademlia(&self, key: u128) {
-        let msg = GarlicMessage::SearchGarlemlia {
+        let msg = CloveMessage::SearchGarlemlia {
             key
         };
 
@@ -788,14 +977,14 @@ impl GarlicCast {
                             _ => {
                                 // Big failure
                                 self.cache.lock().await.remove_sequence(updated.sequence_number);
-                                println!("This should not happen: GarlicCast::forward():1");
+                                println!("{}: This should not happen: GarlicCast::forward():1", self.local_node.address);
                             }
                         }
                     }
                     None => {
                         // Big failure
                         self.cache.lock().await.remove_sequence(next_node.sequence_number);
-                        println!("This should not happen: GarlicCast::forward():2");
+                        println!("{}: This should not happen: GarlicCast::forward():2", self.local_node.address);
                     }
                 }
             }
@@ -856,9 +1045,88 @@ impl GarlicCast {
         }
     }
 
+    async fn forward_proxy_accept(&self, proxy: Proxy, old_sequence: u128) {
+        let hops_start = rand::random::<u16>() & 0b1111;
+        
+        let proxy_info = CloveMessage::ProxyInfo {
+            public_key: self.public_key.clone().unwrap().to_public_key_pem(rsa::pkcs8::LineEnding::LF).unwrap(),
+            starting_hops: hops_start,
+        };
+
+        let cloves = GarlicCast::generate_cloves(proxy_info, 2, proxy.sequence_number).await;
+
+        let agreement_1 = GarlicMessage::ProxyAgree {
+            sequence_number: old_sequence,
+            updated_sequence_number: proxy.sequence_number,
+            hops: hops_start,
+            clove: cloves[0].clone(),
+        };
+
+        let agreement_2 = GarlicMessage::ProxyAgree {
+            sequence_number: old_sequence,
+            updated_sequence_number: proxy.sequence_number,
+            hops: hops_start,
+            clove: cloves[1].clone(),
+        };
+
+        let n_1 = proxy.neighbor_1;
+        let n_2 = proxy.neighbor_2;
+
+        let socket = Arc::clone(&self.socket);
+
+        {
+            if let Err(e) = self.message_handler.send(&Arc::from(socket.clone()), self.local_node.clone(), &n_1.address, &GarlicMessage::build_send(self.local_node.clone(), agreement_1)).await {
+                eprintln!("Failed to send Forward to {}: {:?}", n_1.address, e);
+            }
+        }
+
+        let response;
+        {
+            response = self.message_handler.recv(200, &n_1.address).await;
+        }
+
+        {
+            if let Err(e) = self.message_handler.send(&Arc::from(socket.clone()), self.local_node.clone(), &n_2.address, &GarlicMessage::build_send(self.local_node.clone(), agreement_2)).await {
+                eprintln!("Failed to send Forward to {}: {:?}", n_2.address, e);
+            }
+        }
+
+        let response2;
+        {
+            response2 = self.message_handler.recv(200, &n_2.address).await;
+        }
+
+        match response {
+            Ok(_) => {
+                match response2 {
+                    Ok(_) => {
+                        println!("{} SENT ProxyAgree TO {} AND {}", self.local_node.address, n_2.address, n_1.address);
+                    }
+                    _ => {
+                        println!("{} FAILED TO SEND ProxyAgree TO {} BUT SENT TO {}", self.local_node.address, n_2.address, n_1.address);
+                        self.cache.lock().await.remove_sequence(proxy.sequence_number);
+                        self.cache.lock().await.remove_sequence(old_sequence);
+                    }
+                }
+            }
+            _ => {
+                match response2 {
+                    Ok(_) => {
+                        println!("{} FAILED TO SEND ProxyAgree TO {} BUT SENT TO {}", self.local_node.address, n_1.address, n_2.address);
+                    }
+                    _ => {
+                        println!("{} FAILED TO SEND ProxyAgree TO {} AND {}", self.local_node.address, n_1.address, n_2.address);
+                    }
+                }
+                self.cache.lock().await.remove_sequence(proxy.sequence_number);
+                self.cache.lock().await.remove_sequence(old_sequence);
+            }
+        }
+    }
+
     pub async fn recv(&self, node: Node, garlic_msg: GarlicMessage) -> Result<Option<GarlemliaMessage>, MessageError> {
         let socket = Arc::clone(&self.socket);
-        match garlic_msg {
+        match garlic_msg.clone() {
             GarlicMessage::Forward { sequence_number, clove } => {
                 {
                     if let Err(e) = self.message_handler.send_no_recv(&Arc::from(socket), self.local_node.clone(), &node.address, &GarlicMessage::build_send_is_alive(self.local_node.clone())).await {
@@ -876,6 +1144,7 @@ impl GarlicCast {
 
                 for item in clove_data {
                     if item.1.clove == clove {
+                        println!("{} Received Same Clove", self.local_node.address);
                         same_clove = true;
                         old_node = Some(item.1.from.clone());
                         break;
@@ -884,7 +1153,6 @@ impl GarlicCast {
 
                 let mut node_actual = node.clone();
                 if same_clove {
-                    println!("Received same clove");
                     // Received the exact same clove twice
                     // Remove all old data
                     self.cache.lock().await.remove_sequence(sequence_number);
@@ -905,38 +1173,105 @@ impl GarlicCast {
                     Ok(info) => {
                         match info {
                             Some(next_node) => {
-                                let cache = self.cache.lock().await;
+                                let cache;
+                                {
+                                    cache = self.cache.lock().await.clone();
+                                }
                                 if cache.cloves.contains_key(&sequence_number) {
                                     let first_clove = cache.cloves.get(&sequence_number).unwrap().clone();
-                                    let msg_from_initiator = GarlicCast::get_message_from_cloves(first_clove.clove, clove).await;
+                                    let msg_from_initiator = GarlicCast::get_message_from_cloves(first_clove.clone().clove, clove.clone()).await;
 
-                                    let proxy = Proxy {
-                                        sequence_number,
-                                        neighbor_1: first_clove.from.clone(),
-                                        neighbor_2: node.clone(),
-                                        neighbor_1_hops: 0,
-                                        neighbor_2_hops: 0,
-                                        public_key: "".to_string(),
-                                        used_last: Utc::now(),
-                                    };
-                                    println!("CAN BE PROXY: {:?}", msg_from_initiator);
+                                    match msg_from_initiator {
+                                        CloveMessage::RequestProxy { msg, public_key } => {
+                                            let new_sequence = rand::random::<u128>();
+                                            let proxy = Proxy {
+                                                sequence_number: new_sequence,
+                                                neighbor_1: first_clove.from.clone(),
+                                                neighbor_2: node_actual.clone(),
+                                                neighbor_1_hops: 0,
+                                                neighbor_2_hops: 0,
+                                                public_key: RsaPublicKey::from_public_key_pem(&*public_key).unwrap(),
+                                                used_last: Utc::now(),
+                                            };
+
+                                            {
+                                                self.proxies.lock().await.push(proxy.clone());
+
+                                                let mut cache = self.cache.lock().await;
+                                                cache.insert_next_hop(CloveNode { sequence_number: new_sequence, node: node_actual.clone() }, None);
+                                                cache.insert_next_hop(CloveNode { sequence_number: new_sequence, node: first_clove.clone().from}, None);
+                                                // Insert associations
+                                                cache.insert_association(new_sequence, CloveNode { sequence_number: new_sequence, node: node_actual });
+                                                cache.insert_association(new_sequence, CloveNode { sequence_number: new_sequence, node: first_clove.from});
+                                                // Insert seen last
+                                                cache.seen(new_sequence);
+                                            }
+
+                                            println!("{} CAN BE PROXY FOR #{} -> #{}", self.local_node.address, sequence_number, new_sequence);
+                                            self.forward_proxy_accept(proxy, sequence_number).await;
+                                        },
+                                        _ => {}
+                                    }
                                 } else {
                                     self.forward(next_node, msg).await;
                                 }
                                 Ok(None)
                             }
                             None => {
-                                let cache = self.cache.lock().await;
+                                let cache;
+                                {
+                                    cache = self.cache.lock().await.clone();
+                                }
                                 if cache.cloves.contains_key(&sequence_number) {
                                     let first_clove = cache.cloves.get(&sequence_number).unwrap().clone();
-                                    let msg_from_initiator = GarlicCast::get_message_from_cloves(first_clove.clove, clove).await;
+                                    let msg_from_initiator = GarlicCast::get_message_from_cloves(first_clove.clone().clove, clove).await;
 
-                                    println!("CAN BE PROXY: {:?}", msg_from_initiator);
-                                    // TODO: Add these as neighbors and save this as a proxy
-                                    // TODO: Then return on the path with node information and acceptance
+                                    match msg_from_initiator {
+                                        CloveMessage::RequestProxy { msg, public_key } => {
+                                            let new_sequence = rand::random::<u128>();
+                                            let proxy = Proxy {
+                                                sequence_number: new_sequence,
+                                                neighbor_1: first_clove.from.clone(),
+                                                neighbor_2: node_actual.clone(),
+                                                neighbor_1_hops: 0,
+                                                neighbor_2_hops: 0,
+                                                public_key: RsaPublicKey::from_public_key_pem(&*public_key).unwrap(),
+                                                used_last: Utc::now(),
+                                            };
+
+                                            {
+                                                self.proxies.lock().await.push(proxy.clone());
+
+                                                let mut cache = self.cache.lock().await;
+                                                cache.insert_next_hop(CloveNode { sequence_number: new_sequence, node: node_actual.clone() }, None);
+                                                cache.insert_next_hop(CloveNode { sequence_number: new_sequence, node: first_clove.clone().from}, None);
+                                                // Insert associations
+                                                cache.insert_association(new_sequence, CloveNode { sequence_number: new_sequence, node: node_actual });
+                                                cache.insert_association(new_sequence, CloveNode { sequence_number: new_sequence, node: first_clove.from});
+                                                // Insert seen last
+                                                cache.seen(new_sequence);
+                                            }
+
+                                            println!("{} CAN BE PROXY FOR #{} -> #{}", self.local_node.address, sequence_number, new_sequence);
+                                            self.forward_proxy_accept(proxy, sequence_number).await;
+                                        },
+                                        _ => {
+                                            // TODO: Manage other message types
+                                        }
+                                    }
                                 } else {
                                     // Receive message part from proxy or from initiator
-                                    self.collected_messages.lock().await.push(msg.clone());
+                                    let mut collected_messages = self.collected_messages.lock().await;
+                                    let msgs = collected_messages.get_mut(&sequence_number);
+
+                                    let messages_from;
+                                    if let Some(msg_vec) = msgs {
+                                        msg_vec.push(garlic_msg);
+                                        messages_from = msg_vec.clone();
+                                    } else {
+                                        collected_messages.insert(sequence_number, vec![garlic_msg.clone()]);
+                                        messages_from = vec![garlic_msg];
+                                    }
                                     // TODO: Check if has second part of message already
                                     // TODO: Put message together if it has the second part already
                                     println!("{} GarlicCast::recv():Completed Clove Received", self.local_node.address);
@@ -951,7 +1286,7 @@ impl GarlicCast {
                             self.forward_to_new(sequence_number, node_actual.clone(), msg.clone()).await;
                         } else {
                             // Not forwarding, but still add to own cache
-                            println!("{} not forwarding", self.local_node.address);
+                            println!("{} Not Forwarding", self.local_node.address);
                             let original_clove = CloveNode { sequence_number, node: node_actual.clone() };
                             {
                                 let mut cache = self.cache.lock().await;
@@ -969,7 +1304,141 @@ impl GarlicCast {
                 }
             }
             GarlicMessage::ProxyAgree { sequence_number, updated_sequence_number, hops, clove } => {
-                // TODO: Manage this and forwarding it
+                {
+                    if let Err(e) = self.message_handler.send_no_recv(&Arc::from(socket.clone()), self.local_node.clone(), &node.address, &GarlicMessage::build_send_is_alive(self.local_node.clone())).await {
+                        eprintln!("Failed to send IsAlive to {}: {:?}", node.address, e);
+                    }
+                }
+
+                println!("{} GOT ProxyAgree FROM {}", self.local_node.address, node.address);
+
+                let old_clove_node = CloveNode { sequence_number, node: node.clone() };
+
+                {
+                    self.cache.lock().await.update_sequence_number(updated_sequence_number, old_clove_node.clone());
+                }
+
+                let new_proxy_agree = GarlicMessage::ProxyAgree {
+                    sequence_number,
+                    updated_sequence_number,
+                    hops: hops + 1,
+                    clove: clove.clone(),
+                };
+
+                let next;
+                {
+                    let mut cache = self.cache.lock().await;
+                    next = cache.get_forward_node(CloveNode { sequence_number, node: node.clone() });
+                    cache.seen(sequence_number);
+                    cache.seen(updated_sequence_number);
+                }
+
+                match next {
+                    Ok(info) => {
+                        match info {
+                            Some(next_node) => {
+                                // Has next node
+                                {
+                                    if let Err(e) = self.message_handler.send(&Arc::from(socket), self.local_node.clone(), &next_node.node.address, &GarlicMessage::build_send(self.local_node.clone(), new_proxy_agree)).await {
+                                        eprintln!("Failed to send Forward to {}: {:?}", next_node.node.address, e);
+                                    }
+                                }
+
+                                let response;
+                                {
+                                    response = self.message_handler.recv(200, &next_node.node.address).await;
+                                }
+
+                                match response {
+                                    Ok(_) => {
+                                        // TODO: Begin to find alt node for this sequence number
+                                    }
+                                    _ => {
+                                        // Failed to send to forward node, remove all content
+                                        self.cache.lock().await.remove_sequence(sequence_number);
+                                        self.cache.lock().await.remove_sequence(updated_sequence_number);
+                                    }
+                                }
+                            }
+                            _ => {
+                                let messages_from;
+                                {
+                                    let mut collected_messages = self.collected_messages.lock().await;
+                                    let msgs = collected_messages.get_mut(&updated_sequence_number);
+
+                                    if let Some(msg_vec) = msgs {
+                                        msg_vec.push(garlic_msg);
+                                        messages_from = msg_vec.clone();
+                                    } else {
+                                        collected_messages.insert(updated_sequence_number, vec![garlic_msg.clone()]);
+                                        messages_from = vec![garlic_msg];
+                                    }
+                                }
+
+                                if messages_from.len() == 2 {
+                                    // Has second portion of the ProxyAgree already
+                                    let mut cloves = vec![clove.clone()];
+                                    let mut neighbor_1_hops = 0;
+                                    match messages_from[0].clone() {
+                                        GarlicMessage::ProxyAgree { hops, clove, .. } => {
+                                            neighbor_1_hops = hops;
+                                            cloves.push(clove);
+                                        }
+                                        _ => {}
+                                    }
+
+                                    if cloves.len() == 2 {
+                                        if let Some(neighbor_1) = self.partial_proxies.lock().await.remove(&updated_sequence_number) {
+                                            let msg_from_initiator = GarlicCast::get_message_from_cloves(cloves[0].clone(), cloves[1].clone()).await;
+
+                                            match msg_from_initiator {
+                                                CloveMessage::ProxyInfo { public_key, starting_hops} => {
+                                                    let proxy = Proxy {
+                                                        sequence_number: updated_sequence_number,
+                                                        neighbor_1,
+                                                        neighbor_2: node.clone(),
+                                                        neighbor_1_hops: neighbor_1_hops - starting_hops,
+                                                        neighbor_2_hops: hops - starting_hops,
+                                                        public_key: RsaPublicKey::from_public_key_pem(&*public_key).unwrap(),
+                                                        used_last: Utc::now(),
+                                                    };
+
+                                                    {
+                                                        self.proxies.lock().await.push(proxy.clone());
+                                                        self.collected_messages.lock().await.remove(&updated_sequence_number);
+                                                    }
+
+                                                    println!("{} RECEIVED A PROXY FOR #{} -> #{}", self.local_node.address, sequence_number, updated_sequence_number);
+
+                                                    // TODO: Send back ProxyRouteInfo to proxy
+                                                    // TODO: Begin to find alt node for this sequence number
+                                                }
+                                                _ => {
+                                                    // Big failure
+                                                    println!("{}: This should not happen: GarlicCast::recv::ProxyAgree():1", self.local_node.address);
+                                                }
+                                            }
+                                        } else {
+                                            // Big failure
+                                            println!("{}: This should not happen: GarlicCast::recv::ProxyAgree():2", self.local_node.address);
+                                        }
+
+                                    } else {
+                                        // Big failure
+                                        println!("{}: This should not happen: GarlicCast::recv::ProxyAgree():3", self.local_node.address);
+                                    }
+                                } else {
+                                    self.partial_proxies.lock().await.insert(updated_sequence_number, node);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Big failure
+                        println!("{}: This should not happen: GarlicCast::recv::ProxyAgree():4", self.local_node.address);
+                    }
+                }
+
                 Ok(None)
             }
             GarlicMessage::RequestAlt { .. } => {
