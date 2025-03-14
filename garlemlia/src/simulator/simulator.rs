@@ -503,7 +503,7 @@ pub async fn load_simulated_nodes(file_path: &str) -> Result<Vec<SimulatedNode>,
     let file_nodes: Vec<FileNode> = serde_json::from_str(&contents)?;
     let mut simulated_nodes = vec![];
     for mut node in file_nodes {
-        node.garlic.known_nodes.extend(node.routing_table.clone().to_routing_table().flat_nodes().await);
+        node.garlic.known_nodes.extend(node.routing_table.clone().to_routing_table().flat_nodes().await.clone());
         simulated_nodes.push(file_node_to_simulated(node).await);
     }
     Ok(simulated_nodes)

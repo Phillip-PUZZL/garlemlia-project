@@ -49,11 +49,11 @@ async fn check_node_discover() {
 
             node1.garlic.lock().await.discover_proxies(60).await;
 
-            tokio::time::sleep(time::Duration::from_secs(5)).await;
+            tokio::time::sleep(time::Duration::from_secs(2)).await;
 
             remove_running(node1.node.lock().await.clone()).await;
 
-            let mut updated_nodes = nodes.clone();
+            /*let mut updated_nodes = nodes.clone();
             {
                 let sim = SIM.lock().await;
                 updated_nodes = sim.get_all_nodes().await;
@@ -65,7 +65,7 @@ async fn check_node_discover() {
                 eprintln!("Error saving nodes: {}", e);
             } else {
                 println!("Saved updated nodes to {}", new_file_path);
-            }
+            }*/
         }
         Err(e) => {
             eprintln!("Error loading nodes: {}", e);

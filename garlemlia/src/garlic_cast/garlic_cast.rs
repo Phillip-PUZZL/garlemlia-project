@@ -489,7 +489,9 @@ impl GarlicCast {
     pub async fn update_known(&self, nodes: Vec<Node>) {
         let mut known_nodes = self.known_nodes.lock().await;
         known_nodes.extend(nodes);
+        known_nodes.sort_by_key(|n| n.id);
         known_nodes.dedup();
+        known_nodes.retain(|n| *n != self.local_node);
     }
 
     async fn in_cache(&self, sequence_number: u128) -> bool {
@@ -994,13 +996,43 @@ impl GarlicCast {
     async fn forward_to_new(&self, sequence_number: u128, node: Node, msg: Clove) {
         let mut keep_trying = true;
         while keep_trying {
-            let mut forward_node = node.clone();
             // Basically just try the fuck out of some nodes until one responds with an IsAlive message
-            while forward_node == node {
-                {
-                    forward_node = self.known_nodes.lock().await.choose(&mut rand::rng()).unwrap().clone();
+            let known_nodes;
+            let mut choose_list = vec![];
+            {
+                known_nodes = self.known_nodes.lock().await.clone();
+                choose_list.extend(known_nodes.clone());
+            }
+
+            let variance = rand::random::<u64>();
+
+            if random_bool(0.40) {
+                if random_bool(0.5) {
+                    choose_list.sort_by_key(|n| n.id ^ (sequence_number  + variance as u128));
+                } else {
+                    choose_list.sort_by_key(|n| n.id ^ (sequence_number - variance as u128));
+                }
+            } else {
+                choose_list.sort_by_key(|n| n.id ^ sequence_number);
+                if random_bool(0.50) {
+                    for _ in 0..20 {
+                        if choose_list.len() > 1 {
+                            choose_list.remove(0);
+                        }
+                    }
+                } else {
+                    for _ in 0..20 {
+                        if choose_list.len() > 20 {
+                            choose_list.remove(19);
+                        }
+                    }
                 }
             }
+
+            choose_list.retain(|n| *n != node);
+            choose_list.truncate(40);
+
+            let forward_node = choose_list.choose(&mut rand::rng()).unwrap().clone();
 
             let new_msg = GarlicMessage::Forward {
                 sequence_number,
@@ -1310,7 +1342,7 @@ impl GarlicCast {
                     }
                 }
 
-                println!("{} GOT ProxyAgree FROM {}", self.local_node.address, node.address);
+                //println!("{} GOT ProxyAgree FROM {}", self.local_node.address, node.address);
 
                 let old_clove_node = CloveNode { sequence_number, node: node.clone() };
 
@@ -1328,7 +1360,7 @@ impl GarlicCast {
                 let next;
                 {
                     let mut cache = self.cache.lock().await;
-                    next = cache.get_forward_node(CloveNode { sequence_number, node: node.clone() });
+                    next = cache.get_forward_node(CloveNode { sequence_number: updated_sequence_number, node: node.clone() });
                     cache.seen(sequence_number);
                     cache.seen(updated_sequence_number);
                 }

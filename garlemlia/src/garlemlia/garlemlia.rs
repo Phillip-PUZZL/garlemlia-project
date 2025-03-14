@@ -356,8 +356,9 @@ impl Garlemlia {
             // Merge new nodes into our candidate set.
             let mut new_candidate_set = top_k.clone();
             new_candidate_set.extend(new_nodes.clone());
-            new_candidate_set.dedup();
             new_candidate_set.sort_by_key(|n| n.id ^ target_id);
+            new_candidate_set.dedup();
+            new_candidate_set.retain(|n| *n != self_node);
             new_candidate_set.truncate(DEFAULT_K);
 
             // Compare candidate sets using IDs (order-independent)
