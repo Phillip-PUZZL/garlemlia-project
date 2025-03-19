@@ -337,7 +337,7 @@ impl RoutingTable {
 
         // Find the position in the sorted bucket list.
         // If no bucket has an index >= target_bucket, start with the last one.
-        let mut pos = bucket_indices
+        let pos = bucket_indices
             .iter()
             .position(|&i| i >= target_bucket)
             .unwrap_or(bucket_indices.len().saturating_sub(1));

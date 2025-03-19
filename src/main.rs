@@ -1,12 +1,11 @@
+use garlemlia::garlemlia::garlemlia::Garlemlia;
+use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, Node, RoutingTable};
+use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, SimulatedMessageHandler, SIM};
+use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
+use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use rand_core::OsRng;
-use rsa::{RsaPrivateKey, RsaPublicKey};
-use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use tokio::time;
-use garlemlia::garlemlia::garlemlia::Garlemlia;
-use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, save_simulated_nodes, SimulatedMessageHandler, SIM, generate_keys};
-use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, Node, RoutingTable};
 
 async fn create_test_node(id: u128, port: u16) -> Garlemlia {
     let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
@@ -14,7 +13,7 @@ async fn create_test_node(id: u128, port: u16) -> Garlemlia {
     let private_key = RsaPrivateKey::from_pkcs8_pem("-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDCbUYL5OkM3n8A\nGwpfnpnfT66Fr9QaJg3F6marITjq46f5UX8TvxHkhVXDVfL1tEQzEYnp6+m6+y/l\nPgEvAJjfL/CeX2pIAmoUco1XQjA2Gi4+fbTCaodOLVqQruGZZdcE/UvHGdZHJwOr\nVnmSk7BAX+w4Uj5m7ycAMw+wSaU7wNZV5cQnGOAlMQE4NcJ7uMQYTVIGcI/pehPz\nYeZI2tmu4tgxBzUrMTZENAfIpCnT+d6R6WaMwk2fne/dJ1lYRK76ot9y10RgUuCj\nNn97HXfdqOlk9/uSyDRIfgyF5InqcsoAXXlg6qCwP9SrATuSImMJng5KHrUvbeCr\nUWhFRQYzAgMBAAECggEAZMcjUbL7obIKflGF1P5un7O7sIvtEwi6huXzBa0YxZfv\nT2oQxnl5mswKIlAAuZ8Q4q+qntertUHSF69GCcjzdGxy+oRWoLCvr52Y6avjNYfo\nhHfAJC33qGwVz3z2bv68r1dj2fXofcUZP8x5A6MN7rBJzv/CXLSFsLLG5QenYAqz\nRRLJlC4w7A9qqkassYPdzuFw5GkgEowrOV50DFh/Erw1o8cOHiq5R+MqKYPC1Y69\n2YXaN2qvLbFLtgkRsX9VbWS/WpkKQC8JwI7o67o0d2XFpBm+Pths+UGbALVRfxYd\nn6oi0+o4gbdVYhFcgGO5jvqQNJp+WZwvNftP48TmQQKBgQDgdnam3TlUk6nb8S7b\nnM3rFfxVWlvHNrlihr+oAQ119f36UWbMoIXx75+NUYKMHFbXKRrftj98mfOF0sYz\nYoZ6tcFsE2U7gLZEgoBBd19Y8E7KeObI9NkSe+MMEtL/1e+ivaNO7GSt2nXeiMpP\nu1YFUPDxnKX5Yh/aWeZV4z2kEQKBgQDdvniLbaf7JT9KlVEIyBgN2KXI00DlfQyF\ny0YoMZyuSjHWUo+1kOrn1ALtMHGSMToSNtCUF4Khkn77GYVmFmlfDae0KGJO2/Rg\nFV9mjcedYqBdN1eNQZjkBWC3RZ+nItlM3gRglCqy4nNg/9/n1O163ZZA9mZ9OMPW\nV5vkMZx6AwKBgDXKDar1Dp0G+ch8Jod4Lxxr21k02xOFOK20rs762ZfwCBnpUeIt\ngYu1qZ167/bVf7X14rvDd7lLR0FFfjuoG6PiVGSqzTKSKJuITmXhzlaI18jLajqz\n+iTkzUcCZ8/pG5D7Mtxh58qFtINMcnbi5L1HZUXxDRETA6EWtAzW9NmRAoGBANEZ\nk8KnHQiPDyfdthR523TzHyJJU6EUUoK4NOgiIIWaIXThVfL5PQpvunLAg9g/42rZ\nlcaQhPanlmZiopCqAaNI1SPmEQ4cDE2u2c9zUxDuuBou3biuauZay+EHHo4VJqR9\nl9Ma5UjakcKehx2uhGKgIdgQgoUCymmNI8wDnHLRAoGBAJcu7YA1i6CozXsvoDuw\nRDNCp9yHz8X6qq5OYVI4PRlYH7DiYibDiT8cQ9X2MKwHO6EQTvUJKBo3zhpjkUK0\nXQM8Xau0uiAe+IJaOS4PvsICFGOoXc8VQn99zYabXcIu31LmC/J8pFu1iY47Z20D\nkFOQz9OqdaJ3oPZ6Nq9yY92B\n-----END PRIVATE KEY-----\n").unwrap();
     let public_key = RsaPublicKey::from_public_key_pem("-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwm1GC+TpDN5/ABsKX56Z\n30+uha/UGiYNxepmqyE46uOn+VF/E78R5IVVw1Xy9bREMxGJ6evpuvsv5T4BLwCY\n3y/wnl9qSAJqFHKNV0IwNhouPn20wmqHTi1akK7hmWXXBP1LxxnWRycDq1Z5kpOw\nQF/sOFI+Zu8nADMPsEmlO8DWVeXEJxjgJTEBODXCe7jEGE1SBnCP6XoT82HmSNrZ\nruLYMQc1KzE2RDQHyKQp0/nekelmjMJNn53v3SdZWESu+qLfctdEYFLgozZ/ex13\n3ajpZPf7ksg0SH4MheSJ6nLKAF15YOqgsD/UqwE7kiJjCZ4OSh61L23gq1FoRUUG\nMwIDAQAB\n-----END PUBLIC KEY-----\n").unwrap();
 
-    let mut node = Garlemlia::new_with_details(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone(), public_key, private_key);
+    let node = Garlemlia::new_with_details(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone(), public_key, private_key);
 
     add_running(node_actual.clone(), Arc::clone(&node.routing_table)).await;
 

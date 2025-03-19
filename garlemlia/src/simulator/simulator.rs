@@ -1,28 +1,26 @@
 use crate::garlemlia::garlemlia;
 use crate::garlemlia_structs::garlemlia_structs;
+use crate::garlemlia_structs::garlemlia_structs::SerializableRoutingTable;
 use crate::garlic_cast::garlic_cast;
+use crate::garlic_cast::garlic_cast::SerializableGarlicCast;
 use async_trait::async_trait;
 use garlemlia::Garlemlia;
-use garlemlia_structs::{GMessage, GarlemliaMessage, GarlicMessage, KBucket, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
+use garlemlia_structs::{GMessage, GarlemliaMessage, GarlicMessage, MessageChannel, MessageError, Node, RoutingTable, DEFAULT_K};
 use garlic_cast::GarlicCast;
 use lazy_static::lazy_static;
 use once_cell::sync::OnceCell;
-use rand::prelude::IndexedRandom;
 use rand::random_range;
 use rand_core::OsRng;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::Hash;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use crate::garlemlia_structs::garlemlia_structs::SerializableRoutingTable;
-use crate::garlic_cast::garlic_cast::SerializableGarlicCast;
 
 #[derive(Debug, Clone)]
 pub struct Simulator {

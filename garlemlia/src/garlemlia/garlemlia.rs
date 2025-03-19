@@ -583,10 +583,6 @@ impl Garlemlia {
         let total_buckets = 128;
         for b in 0..total_buckets {
             let refresh_id = RoutingTable::random_id_for_bucket(self_id, b);
-            let index;
-            {
-                index = self.routing_table.lock().await.bucket_index(refresh_id);
-            }
             self.iterative_find_node(socket.clone(), refresh_id).await;
         }
     }

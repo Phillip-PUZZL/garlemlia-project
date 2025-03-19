@@ -156,8 +156,13 @@ impl CloveCache {
 
     pub fn insert_updated_association(&mut self, sequence_number: u128, new_sequence_number: u128) {
         if self.associations.contains_key(&sequence_number) {
-            let associations = self.associations.get(&sequence_number).unwrap();
-            self.associations.insert(new_sequence_number, associations.clone());
+            let associations = self.associations.get(&sequence_number).unwrap().clone();
+
+            self.associations.insert(new_sequence_number, vec![]);
+            for mut node in associations.iter().cloned() {
+                node.sequence_number = new_sequence_number;
+                self.associations.get_mut(&new_sequence_number).unwrap().push(node);
+            }
         } else {
             self.associations.insert(new_sequence_number, vec![]);
         }
@@ -237,7 +242,8 @@ impl CloveCache {
             Ok(next_hop) => {
                 match next_hop {
                     Some(next_node) => {
-                        let new_next_hop_clove_node = CloveNode { sequence_number: new_sequence_number, node: next_node.clone().node };
+                        let mut new_next_hop_clove_node = CloveNode { sequence_number: new_sequence_number, node: next_node.clone().node };
+                        new_next_hop_clove_node.sequence_number = new_sequence_number;
                         self.insert_next_hop(new_clove_node.clone(), Some(new_next_hop_clove_node.clone()));
                         self.insert_next_hop(new_next_hop_clove_node.clone(), Some(new_clove_node.clone()));
 
@@ -247,7 +253,8 @@ impl CloveCache {
                             // In theory this should never happen since alt nodes are assigned
                             // after the path has already been solidified
                             println!("This should not happen: CloveCache::update_sequence_number():1");
-                            let alt = self.alt_nodes.get(&clove_node).unwrap().clone();
+                            let mut alt = self.alt_nodes.get(&clove_node).unwrap().clone();
+                            alt.sequence_number = new_sequence_number;
                             self.insert_alt_node(new_clove_node, alt);
                         }
 
@@ -257,7 +264,8 @@ impl CloveCache {
                             // In theory this should never happen since alt nodes are assigned
                             // after the path has already been solidified
                             println!("This should not happen: CloveCache::update_sequence_number():2");
-                            let alt = self.alt_nodes.get(&next_node).unwrap().clone();
+                            let mut alt = self.alt_nodes.get(&next_node).unwrap().clone();
+                            alt.sequence_number = new_sequence_number;
                             self.insert_alt_node(new_next_hop_clove_node, alt);
                         }
 
@@ -1187,6 +1195,7 @@ impl GarlicCast {
                 if same_clove {
                     // Received the exact same clove twice
                     // Remove all old data
+                    // TODO: Issues with this interaction and ProxyAgree. Need to determine what to actually do here.
                     self.cache.lock().await.remove_sequence(sequence_number);
                     // Set the 'from' node to the old node since it is a shorter path
                     node_actual = old_node.unwrap();
@@ -1363,6 +1372,8 @@ impl GarlicCast {
                     next = cache.get_forward_node(CloveNode { sequence_number: updated_sequence_number, node: node.clone() });
                     cache.seen(sequence_number);
                     cache.seen(updated_sequence_number);
+                    println!("\n**************OLD***************\n{:?}", cache.associations.get(&sequence_number));
+                    println!("\n**************NEW***************\n{:?}", cache.associations.get(&updated_sequence_number));
                 }
 
                 match next {
