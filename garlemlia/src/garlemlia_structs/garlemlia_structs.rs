@@ -459,8 +459,8 @@ pub struct MessageChannel {
 pub trait GMessage: Send + Sync {
     fn create(channel_count: u8) -> Box<dyn GMessage> where Self: Sized;
     async fn send_tx(&self, addr: SocketAddr, msg: MessageChannel) -> Result<(), MessageError>;
-    async fn send_no_recv(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError>;
-    async fn send(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError>;
+    async fn send_no_recv(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<Option<GarlemliaMessage>, MessageError>;
+    async fn send(&self, socket: &UdpSocket, from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<Option<GarlemliaMessage>, MessageError>;
     async fn recv(&self, timeout_ms: u64, src: &SocketAddr) -> Result<GarlemliaMessage, MessageError>;
     fn clone_box(&self) -> Box<dyn GMessage>;
 
@@ -554,16 +554,16 @@ impl GMessage for GarlemliaMessageHandler {
         }
     }
 
-    async fn send_no_recv(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError> {
+    async fn send_no_recv(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<Option<GarlemliaMessage>, MessageError> {
         // Now actually send the UDP message
         let bytes = serde_json::to_vec(msg)
             .map_err(|e| MessageError::SerializationError(e.to_string()))?;
         socket.send_to(&bytes, target).await?;
-        Ok(())
+        Ok(None)
     }
 
     /// Takes an RX/TX from the “available” pool, assigns it to the `target`, and sends the given message.
-    async fn send(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<(), MessageError> {
+    async fn send(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<Option<GarlemliaMessage>, MessageError> {
         let mut need_rx = true;
 
         // Try once outside the loop
@@ -621,7 +621,7 @@ impl GMessage for GarlemliaMessageHandler {
         let bytes = serde_json::to_vec(msg)
             .map_err(|e| MessageError::SerializationError(e.to_string()))?;
         socket.send_to(&bytes, target).await?;
-        Ok(())
+        Ok(None)
     }
 
     /// Receives a message from the “unavailable” RX assigned to `src`, then returns that RX/TX pair to the pool.
@@ -763,8 +763,7 @@ pub enum CloveMessage {
         starting_hops: u16
     },
     ProxyRouteInfo {
-        neighbor_1_hops: u16,
-        neighbor_2_hops: u16
+        hops: u16
     },
     SearchOverlay {
         search_term: String,

@@ -118,8 +118,6 @@ impl CloveCache {
     pub fn remove_sequence(&mut self, sequence_number: u128) {
         let associated = self.associations.remove(&sequence_number);
 
-        println!("REMOVE SEQUENCE CALLED!");
-
         match associated {
             Some(associated_nodes) => {
                 self.cloves.remove(&sequence_number);
@@ -143,8 +141,8 @@ impl CloveCache {
         self.cloves.insert(clove.sequence_number, CloveData { clove, from });
     }
 
-    pub fn remove_clove(&mut self, clove: Clove) {
-        self.cloves.remove(&clove.sequence_number);
+    pub fn remove_clove(&mut self, sequence_number: u128) {
+        self.cloves.remove(&sequence_number);
     }
 
     pub fn insert_association(&mut self, sequence_number: u128, node: CloveNode) {
@@ -583,7 +581,6 @@ impl GarlicCast {
                     Ok(val) => {
                         match val {
                             Ok(node_success) => {
-                                println!("{} FORWARDED INITIAL TO {}", self.local_node.address, node_success.address);
                                 let new_clove = CloveNode {
                                     sequence_number,
                                     node: node_success,
@@ -1015,25 +1012,7 @@ impl GarlicCast {
                 choose_list.extend(known_nodes.clone());
             }
 
-            if random_bool(0.60) {
-                choose_list.sort_by_key(|n| n.id ^ sequence_number);
-                if random_bool(0.50) {
-                    for _ in 0..20 {
-                        if choose_list.len() > 1 {
-                            choose_list.remove(0);
-                        }
-                    }
-                } else {
-                    for _ in 0..20 {
-                        if choose_list.len() > 20 {
-                            choose_list.remove(19);
-                        }
-                    }
-                }
-            }
-
             choose_list.retain(|n| *n != node);
-            choose_list.truncate(40);
 
             let forward_node = choose_list.choose(&mut rand::rng()).unwrap().clone();
 
@@ -1161,7 +1140,13 @@ impl GarlicCast {
 
     async fn accept_proxy(&self, cache: CloveCache, sequence_number: u128, second_clove: Clove, node: Node) {
         let first_clove = cache.cloves.get(&sequence_number).unwrap().clone();
-        let msg_from_initiator = GarlicCast::get_message_from_cloves(first_clove.clone().clove, second_clove).await;
+        let msg_from_initiator = GarlicCast::get_message_from_cloves(first_clove.clone().clove, second_clove.clone()).await;
+
+        if first_clove.from.id == node.id {
+            println!("COULD NOT ACCEPT PROXY, RECEIVED FROM SAME NODE {}", node.address);
+            self.cache.lock().await.remove_clove(sequence_number);
+            return;
+        }
 
         match msg_from_initiator {
             CloveMessage::RequestProxy { msg, public_key } => {
@@ -1178,7 +1163,6 @@ impl GarlicCast {
 
                 {
                     self.proxies.lock().await.push(proxy.clone());
-
                     let mut cache = self.cache.lock().await;
                     cache.insert_next_hop(CloveNode { sequence_number: new_sequence, node: node.clone() }, None);
                     cache.insert_next_hop(CloveNode { sequence_number: new_sequence, node: first_clove.clone().from}, None);
@@ -1187,11 +1171,11 @@ impl GarlicCast {
                     cache.insert_association(new_sequence, CloveNode { sequence_number: new_sequence, node: first_clove.from});
                     // Insert seen last
                     cache.seen(new_sequence);
-                    println!("{:?}", cache.cloves);
-                    println!("{:?}", node);
+                    // Remove old clove
+                    cache.remove_clove(sequence_number);
                 }
 
-                println!("{} CAN BE PROXY FOR #{} -> #{}", self.local_node.address, sequence_number, new_sequence);
+                println!("{} :: PROXY :: {}", Utc::now(), self.local_node.address);
                 self.forward_proxy_accept(proxy.clone(), sequence_number).await;
             },
             _ => {
@@ -1209,6 +1193,8 @@ impl GarlicCast {
                         eprintln!("Failed to send IsAlive to {}: {:?}", node.address, e);
                     }
                 }
+
+                println!("{} :: FORWARD {}[{}] :: {} -> {}", Utc::now(), sequence_number, clove.index, node.address, self.local_node.address);
 
                 let mut same_clove = false;
                 let clove_data;
@@ -1232,7 +1218,7 @@ impl GarlicCast {
                 if same_clove {
                     // Received the exact same clove twice
                     // Set the 'from' node to the old node since it is a shorter path
-                    println!("{} RECEIVED SAME CLOVE", self.local_node.address);
+                    println!("{} :: SAME CLOVE {}[{}] :: {}", Utc::now(), sequence_number, clove.index, self.local_node.address);
                     node_actual = old_node.unwrap();
                     next = Err(());
                     {
@@ -1291,11 +1277,17 @@ impl GarlicCast {
                         }
                     }
                     Err(_) => {
-                        if random_bool(FORWARD_P) {
+                        let cache;
+                        {
+                            cache = self.cache.lock().await.clone();
+                        }
+                        if cache.cloves.contains_key(&sequence_number) && !same_clove {
+                            self.accept_proxy(cache, sequence_number, clove, node_actual).await;
+                        } else if random_bool(FORWARD_P) {
                             // First time seeing this sequence number and forwarding it
                             self.forward_to_new(sequence_number, node_actual.clone(), msg.clone()).await;
                         } else {
-                            println!("{} NOT FORWARDING", self.local_node.address);
+                            println!("{} :: NOT FORWARDING {}[{}] :: {}", Utc::now(), sequence_number, clove.index, self.local_node.address);
                             // Not forwarding, but still add to own cache
                             let original_clove = CloveNode { sequence_number, node: node_actual.clone() };
                             {
@@ -1319,6 +1311,8 @@ impl GarlicCast {
                         eprintln!("Failed to send IsAlive to {}: {:?}", node.address, e);
                     }
                 }
+
+                println!("{} :: PROXYAGREE {}[{}] :: {} -> {}", Utc::now(), updated_sequence_number, clove.index, node.address, self.local_node.address);
 
                 //println!("{} GOT ProxyAgree FROM {}", self.local_node.address, node.address);
 
