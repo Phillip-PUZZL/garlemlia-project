@@ -300,6 +300,9 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                 GarlicMessage::IsAlive { .. } => {
                     return Err(None)
                 }
+                GarlicMessage::AgreeAlt { .. } => {
+                    return Err(None)
+                }
                 _ => {}
             }
 
@@ -321,6 +324,13 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                 tokio::spawn(async move {
                     let _ = garlic.lock().await.recv(sender_clone, msg_clone).await;
                 });
+
+                match msg {
+                    GarlicMessage::RequestAlt { .. } => {
+                        return Ok(GarlemliaMessage::Garlic { msg: GarlicMessage::AgreeAlt { alt_sequence_number: msg.sequence_number(), sender: self_node.clone() }, sender: self_node.clone() })
+                    }
+                    _ => {}
+                }
                 return Ok(GarlemliaMessage::Garlic { msg: GarlicMessage::IsAlive { sender: self_node.clone() }, sender: self_node.clone() })
             }
             Err(Some(MessageError::Timeout))

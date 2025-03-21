@@ -225,6 +225,7 @@ impl Garlemlia {
                         }
 
                         GarlemliaMessage::Garlic { msg, sender } => {
+                            // TODO: Handle IsAlive and AgreeProxy messages here without going to garlic.recv()
                             let mut rt = routing_table.lock().await;
                             rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
                             let _ = garlic.lock().await.recv(sender, msg).await;

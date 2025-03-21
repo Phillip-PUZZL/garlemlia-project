@@ -737,6 +737,13 @@ pub struct Clove {
     pub ida_count: u8
 }
 
+impl Clove {
+    pub fn update_sequence(&mut self, new_sequence_number: u128) -> Clove {
+        self.sequence_number = new_sequence_number;
+        self.clone()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CloveData {
     pub clove: Clove,
@@ -762,9 +769,6 @@ pub enum CloveMessage {
         public_key: String,
         starting_hops: u16
     },
-    ProxyRouteInfo {
-        hops: u16
-    },
     SearchOverlay {
         search_term: String,
     },
@@ -781,6 +785,10 @@ pub enum CloveMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub enum GarlicMessage {
+    FindProxy {
+        sequence_number: u128,
+        clove: Clove
+    },
     Forward {
         sequence_number: u128,
         clove: Clove
@@ -804,8 +812,7 @@ pub enum GarlicMessage {
     },
     UpdateAlt {
         sequence_number: u128,
-        alt_sequence_number: u128,
-        alt: Node
+        alt_node: CloveNode
     },
     AgreeAlt {
         alt_sequence_number: u128,
@@ -816,18 +823,38 @@ pub enum GarlicMessage {
 impl GarlicMessage {
     pub fn sequence_number(&self) -> u128 {
         match self {
+            GarlicMessage::FindProxy { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::Forward { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::IsAlive { .. } => {0}
             GarlicMessage::ProxyAgree { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::RequestAlt { .. } => {0}
             GarlicMessage::RefreshAlt { .. } => {0}
             GarlicMessage::UpdateAlt { .. } => {0}
-            GarlicMessage::AgreeAlt { .. } => {0}
+            GarlicMessage::AgreeAlt { alt_sequence_number, .. } => {alt_sequence_number.clone()}
+        }
+    }
+
+    pub fn update_sequence_number(&mut self, new_sequence_number: u128) {
+        match self {
+            GarlicMessage::Forward { clove, .. } => {
+                self = &mut GarlicMessage::Forward {
+                    sequence_number: new_sequence_number,
+                    clove: clove.update_sequence(new_sequence_number)
+                };
+            }
+            GarlicMessage::UpdateAlt { alt_node, .. } => {
+                self = &mut GarlicMessage::UpdateAlt {
+                    sequence_number: new_sequence_number,
+                    alt_node: alt_node.clone(),
+                };
+            }
+            _ => {}
         }
     }
 
     pub fn clove(&self) -> Option<Clove> {
         match self {
+            GarlicMessage::FindProxy { clove, .. } => {Some(clove.clone().clone())}
             GarlicMessage::Forward { clove, .. } => {Some(clove.clone().clone())}
             GarlicMessage::IsAlive { .. } => {None}
             GarlicMessage::ProxyAgree { clove, .. } => {Some(clove.clone())}
