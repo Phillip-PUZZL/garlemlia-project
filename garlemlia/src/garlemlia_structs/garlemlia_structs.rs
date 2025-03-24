@@ -694,6 +694,8 @@ pub enum GarlemliaMessage {
     Garlic { msg: GarlicMessage, sender: Node },
     Ping { sender: Node },
     Pong { sender: Node },
+    SearchFile { search_id: u128, proxy_id: u128, search_term: String, sender: Node },
+    AgreeAlt { alt_sequence_number: u128, sender: Node },
     Stop { }
 }
 
@@ -705,8 +707,10 @@ impl GarlemliaMessage {
             GarlemliaMessage::FindValue { sender, .. } => sender.id.clone(),
             GarlemliaMessage::Response { sender, .. } => sender.id.clone(),
             GarlemliaMessage::Garlic { sender, .. } => sender.id.clone(),
-            GarlemliaMessage::Ping {sender} => sender.id.clone(),
+            GarlemliaMessage::Ping { sender} => sender.id.clone(),
             GarlemliaMessage::Pong { sender, .. } => sender.id.clone(),
+            GarlemliaMessage::SearchFile { sender, ..} => sender.id.clone(),
+            GarlemliaMessage::AgreeAlt { sender, .. } => sender.id.clone(),
             GarlemliaMessage::Stop {} => 0,
         }
     }
@@ -718,8 +722,10 @@ impl GarlemliaMessage {
             GarlemliaMessage::FindValue { sender, .. } => Some(sender.clone()),
             GarlemliaMessage::Response { sender, .. } => Some(sender.clone()),
             GarlemliaMessage::Garlic { sender, .. } => Some(sender.clone()),
-            GarlemliaMessage::Ping {sender} => Some(sender.clone()),
+            GarlemliaMessage::Ping { sender} => Some(sender.clone()),
             GarlemliaMessage::Pong { sender, .. } => Some(sender.clone()),
+            GarlemliaMessage::SearchFile { sender, ..} => Some(sender.clone()),
+            GarlemliaMessage::AgreeAlt { sender, .. } => Some(sender.clone()),
             GarlemliaMessage::Stop {} => None,
         }
     }
@@ -770,16 +776,51 @@ pub enum CloveMessage {
         starting_hops: u16
     },
     SearchOverlay {
+        request_id: u128,
+        proxy_id: u128,
         search_term: String,
+        public_key: String
     },
     SearchGarlemlia {
-        key: u128
+        request_id: u128,
+        key: u128,
+        public_key: String
     },
     ResponseDirect {
-        data: Vec<u8>
+        request_id: u128,
+        address: SocketAddr,
+        data: Vec<u8>,
+        public_key: String
     },
     ResponseWithValidator {
-        data: Vec<u8>
+        request_id: u128,
+        proxy_id: u128,
+        data: Vec<u8>,
+        public_key: String
+    }
+}
+
+impl CloveMessage {
+    pub fn request_id(&self) -> u128 {
+        match self {
+            CloveMessage::RequestProxy { .. } => {0}
+            CloveMessage::ProxyInfo { .. } => {0}
+            CloveMessage::SearchOverlay { request_id, .. } => {request_id.clone()}
+            CloveMessage::SearchGarlemlia { request_id, .. } => {request_id.clone()}
+            CloveMessage::ResponseDirect { request_id, .. } => {request_id.clone()}
+            CloveMessage::ResponseWithValidator { request_id, .. } => {request_id.clone()}
+        }
+    }
+
+    pub fn is_request(&self) -> bool {
+        match self {
+            CloveMessage::RequestProxy { .. } => {false}
+            CloveMessage::ProxyInfo { .. } => {false}
+            CloveMessage::SearchOverlay { .. } => {true}
+            CloveMessage::SearchGarlemlia { .. } => {true}
+            CloveMessage::ResponseDirect { .. } => {true}
+            CloveMessage::ResponseWithValidator { .. } => {true}
+        }
     }
 }
 
@@ -792,9 +833,6 @@ pub enum GarlicMessage {
     Forward {
         sequence_number: u128,
         clove: Clove
-    },
-    IsAlive {
-        sender: Node,
     },
     ProxyAgree {
         sequence_number: u128,
@@ -813,11 +851,7 @@ pub enum GarlicMessage {
     UpdateAlt {
         sequence_number: u128,
         alt_node: CloveNode
-    },
-    AgreeAlt {
-        alt_sequence_number: u128,
-        sender: Node
-    },
+    }
 }
 
 impl GarlicMessage {
@@ -825,12 +859,10 @@ impl GarlicMessage {
         match self {
             GarlicMessage::FindProxy { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::Forward { sequence_number, .. } => {sequence_number.clone()}
-            GarlicMessage::IsAlive { .. } => {0}
             GarlicMessage::ProxyAgree { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::RequestAlt { .. } => {0}
             GarlicMessage::RefreshAlt { .. } => {0}
             GarlicMessage::UpdateAlt { .. } => {0}
-            GarlicMessage::AgreeAlt { alt_sequence_number, .. } => {alt_sequence_number.clone()}
         }
     }
 
@@ -856,20 +888,15 @@ impl GarlicMessage {
         match self {
             GarlicMessage::FindProxy { clove, .. } => {Some(clove.clone().clone())}
             GarlicMessage::Forward { clove, .. } => {Some(clove.clone().clone())}
-            GarlicMessage::IsAlive { .. } => {None}
             GarlicMessage::ProxyAgree { clove, .. } => {Some(clove.clone())}
             GarlicMessage::RequestAlt { .. } => {None}
             GarlicMessage::RefreshAlt { .. } => {None}
             GarlicMessage::UpdateAlt { .. } => {None}
-            GarlicMessage::AgreeAlt { .. } => {None}
         }
     }
 
     pub fn build_send_is_alive(sender: Node) -> GarlemliaMessage {
-        GarlemliaMessage::Garlic {
-            msg: GarlicMessage::IsAlive {
-                sender: sender.clone(),
-            },
+        GarlemliaMessage::Pong {
             sender,
         }
     }

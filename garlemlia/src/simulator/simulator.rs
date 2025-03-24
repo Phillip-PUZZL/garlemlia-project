@@ -296,15 +296,6 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
         }
 
         GarlemliaMessage::Garlic { msg, sender } => {
-            match msg {
-                GarlicMessage::IsAlive { .. } => {
-                    return Err(None)
-                }
-                GarlicMessage::AgreeAlt { .. } => {
-                    return Err(None)
-                }
-                _ => {}
-            }
 
             //println!("Before SIM lock 2");
             let mut is_alive = false;
@@ -327,11 +318,11 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
 
                 match msg {
                     GarlicMessage::RequestAlt { .. } => {
-                        return Ok(GarlemliaMessage::Garlic { msg: GarlicMessage::AgreeAlt { alt_sequence_number: msg.sequence_number(), sender: self_node.clone() }, sender: self_node.clone() })
+                        return Ok(GarlemliaMessage::AgreeAlt { alt_sequence_number: msg.sequence_number(), sender: self_node.clone() })
                     }
                     _ => {}
                 }
-                return Ok(GarlemliaMessage::Garlic { msg: GarlicMessage::IsAlive { sender: self_node.clone() }, sender: self_node.clone() })
+                return Ok(GarlemliaMessage::Pong { sender: self_node.clone() })
             }
             Err(Some(MessageError::Timeout))
         }
@@ -352,6 +343,14 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
         }
 
         GarlemliaMessage::Pong { .. } => {
+            Err(None)
+        }
+
+        GarlemliaMessage::SearchFile { search_id, proxy_id, search_term, sender } => {
+            Err(None)
+        }
+
+        GarlemliaMessage::AgreeAlt { .. } => {
             Err(None)
         }
 
@@ -508,7 +507,6 @@ impl GMessage for SimulatedMessageHandler {
                         target_garm = Arc::clone(RUNNING_GARLEMLIA.lock().await.get(&target_running.unwrap()).unwrap());
                     }
                     if self.local_addr.to_string() == target.to_string() {
-                        // TODO: Process message, this node is running and is the recipient
                         let response = parse_message_running(target_garm, from_node.clone(), msg.clone()).await;
                         let mut self_messages = self.messages.lock().await;
 
@@ -662,7 +660,7 @@ pub async fn save_simulated_nodes(file_path: &str, nodes: &Vec<SimulatedNode>) -
     for node in nodes {
         {
             let garlic = node.garlic.lock().await;
-            garlic.known_nodes.lock().await.clear();
+            garlic.set_known(vec![]).await;
         }
         file_nodes.push(simulated_node_to_file(node.clone()).await);
     }

@@ -225,7 +225,6 @@ impl Garlemlia {
                         }
 
                         GarlemliaMessage::Garlic { msg, sender } => {
-                            // TODO: Handle IsAlive and AgreeProxy messages here without going to garlic.recv()
                             let mut rt = routing_table.lock().await;
                             rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
                             let _ = garlic.lock().await.recv(sender, msg).await;
@@ -239,6 +238,25 @@ impl Garlemlia {
 
                         GarlemliaMessage::Pong { sender, .. } => {
                             let tx_info = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: GarlemliaMessage::Pong { sender } }).await;
+
+                            match tx_info {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!("Failed to send TX for message from {}: {:?}", src, e);
+                                }
+                            }
+                        }
+
+                        GarlemliaMessage::SearchFile { search_id, proxy_id, search_term, sender } => {
+                            let mut rt = routing_table.lock().await;
+                            rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
+                        }
+
+                        GarlemliaMessage::AgreeAlt { alt_sequence_number, sender } => {
+                            let mut rt = routing_table.lock().await;
+                            rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
+
+                            let tx_info = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: GarlemliaMessage::AgreeAlt { alt_sequence_number, sender } }).await;
 
                             match tx_info {
                                 Ok(_) => {}

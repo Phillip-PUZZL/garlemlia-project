@@ -1,11 +1,13 @@
+use std::io::{stdin, stdout, Write};
 use garlemlia::garlemlia::garlemlia::Garlemlia;
 use garlemlia::garlemlia_structs::garlemlia_structs::{Node, RoutingTable};
-use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, simulated_to_gmessage, SIM, GarlemliaInfo, save_simulated_nodes};
+use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, simulated_to_gmessage, SIM, GarlemliaInfo, save_simulated_nodes, SimulatedNode};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::time;
+use regex::{Captures, Match, Regex};
 
 async fn create_test_node(id: u128, port: u16) -> Garlemlia {
     let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
@@ -20,7 +22,6 @@ async fn create_test_node(id: u128, port: u16) -> Garlemlia {
     node
 }
 
-// TODO: Move this to the garlic_cast_tests file when testing of the test finishes XD
 async fn check_node_discover() {
     init_socket_once().await;
     let file_path = "./test_nodes.json";
@@ -47,7 +48,15 @@ async fn check_node_discover() {
 
             println!("Node1 Joined Network");
 
-            node1.garlic.lock().await.discover_proxies(60).await;
+            {
+                node1.garlic.lock().await.discover_proxies(60).await;
+            }
+
+            tokio::time::sleep(time::Duration::from_secs(3)).await;
+
+            {
+                node1.garlic.lock().await.send_search_overlay("HOWDY PARDNER".to_string(), 3).await;
+            }
 
             tokio::time::sleep(time::Duration::from_secs(2)).await;
 
@@ -92,6 +101,139 @@ async fn create_test_nodes() {
             eprintln!("Error loading nodes: {}", e);
             assert!(false, "Could not load nodes");
         },
+    }
+}
+
+async fn garlemlia_console() {
+    // TODO: Finish this to make it viable as a means to control garlemlia
+    init_socket_once().await;
+
+    let mut simulated_nodes = Vec::new();
+
+    let mut running_nodes: Vec<Garlemlia> = Vec::new();
+    let mut selected: usize = usize::MAX;
+
+    loop {
+        let mut s = String::new();
+        print!("> ");
+        let _ = stdout().flush();
+        stdin().read_line(&mut s).expect("Did not enter a correct string");
+
+        if let Some('\n') = s.chars().next_back() {
+            s.pop();
+        }
+        if let Some('\r') = s.chars().next_back() {
+            s.pop();
+        }
+
+        if s.starts_with("LIST RUNNING") {
+            for i in 0..running_nodes.len() {
+                if i == selected {
+                    print!("* ");
+                }
+                let now_node = running_nodes[i].node.lock().await;
+                println!("{}. ADDRESS: {} ID: {}", i, now_node.address, now_node.id);
+            }
+        } else if s.starts_with("SELECT RUNNING ") {
+            let re = Regex::new(r"\d+").unwrap();
+            let result: Option<Match> = re.find(&*s);
+            let index: u32 = result.map(|m| m.as_str().parse::<u32>().unwrap()).unwrap_or(0);
+
+            selected = index as usize;
+        } else if s.starts_with("LOAD SIM ") {
+            let re = Regex::new(r"LOAD SIM (.+)").unwrap();
+            let result = re.captures(&*s);
+            let Some(file_info) = result else {
+                println!("NO PATH GIVEN");
+                return;
+            };
+            let file_path = file_info[1].to_string();
+
+            match load_simulated_nodes(&*file_path).await {
+                Ok(nodes) => {
+                    simulated_nodes = nodes;
+                }
+                Err(e) => {
+                    eprintln!("Error loading nodes: {}", e);
+                    assert!(false, "Could not load nodes");
+                },
+            }
+        } else if s.starts_with("SAVE SIM ") {
+            let re = Regex::new(r"SAVE SIM (.+\.json)").unwrap();
+            let result: Option<Match> = re.find(&*s);
+            let file_path = result.map(|m| m.as_str()).unwrap_or("");
+
+            if let Err(e) = save_simulated_nodes(file_path, &simulated_nodes).await {
+                eprintln!("Error saving nodes: {}", e);
+            } else {
+                println!("Saved updated nodes to {}", file_path);
+            }
+        } else if s.starts_with("CREATE NODE ") {
+            let re = Regex::new(r"\d+").unwrap();
+            let result: Option<Match> = re.find(&*s);
+            let port: u16 = result.map(|m| m.as_str().parse::<u16>().unwrap()).unwrap_or(0);
+
+            running_nodes.push(create_test_node(rand::random::<u128>(), port).await);
+        } else if s.starts_with("JOIN ") {
+            let re = Regex::new(r"JOIN (.+):").unwrap();
+            let re2 = Regex::new(r":(\d+)").unwrap();
+
+            let result = re.captures(&*s);
+            let Some(capture_info) = result else {
+                println!("NO PATH GIVEN");
+                return;
+            };
+            let address = capture_info[1].to_string();
+
+            let result = re2.captures(&*s);
+            let Some(capture_info) = result else {
+                println!("NO PATH GIVEN");
+                return;
+            };
+            let port: u16 = capture_info[1].to_string().parse::<u16>().unwrap();
+
+            running_nodes[selected].join_network(get_global_socket().unwrap().clone(), &SocketAddr::new(address.parse().unwrap(), port)).await;
+        } else if s.starts_with("DISCOVER ") {
+            let re = Regex::new(r"\d+").unwrap();
+            let result: Option<Match> = re.find(&*s);
+            let count: u8 = result.map(|m| m.as_str().parse::<u8>().unwrap()).unwrap_or(0);
+
+            {
+                running_nodes[selected].garlic.lock().await.discover_proxies(count).await;
+            }
+        } else if s.starts_with("SEARCH ") {
+            if s.starts_with("SEARCH OVERLAY ") {
+                let re = Regex::new(r"SEARCH OVERLAY (.+)").unwrap();
+                let result: Option<Match> = re.find(&*s);
+                let file_name = result.map(|m| m.as_str()).unwrap_or("");
+
+                {
+                    running_nodes[selected].garlic.lock().await.send_search_overlay(file_name.parse().unwrap(), 3).await;
+                }
+            } else if s.starts_with("SEARCH KADEMLIA ") {
+                let re = Regex::new(r"\d+").unwrap();
+                let result: Option<Match> = re.find(&*s);
+                let value: u128 = result.map(|m| m.as_str().parse::<u128>().unwrap()).unwrap_or(0);
+
+                {
+                    running_nodes[selected].garlic.lock().await.send_search_kademlia(value).await;
+                }
+            }
+        } else if s.starts_with("CREATE SIMULATED") {
+            create_test_nodes().await;
+
+            match load_simulated_nodes("./test_nodes.json").await {
+                Ok(nodes) => {
+                    simulated_nodes = nodes;
+                }
+                Err(e) => {
+                    eprintln!("Error loading nodes: {}", e);
+                    assert!(false, "Could not load nodes");
+                },
+            }
+        } else if s.starts_with("QUIT") {
+            break
+        }
     }
 }
 

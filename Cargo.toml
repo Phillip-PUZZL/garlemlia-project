@@ -9,3 +9,4 @@ rand = { version = "0.9.0", features = ["std"] }
 rand_core = "0.6.4"
 rsa = "0.9.7"
 garlemlia = { path = "./garlemlia" }
+regex = "1.11.1"
