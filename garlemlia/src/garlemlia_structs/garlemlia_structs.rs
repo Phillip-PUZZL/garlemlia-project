@@ -837,13 +837,13 @@ impl GarlicMessage {
     pub fn update_sequence_number(&mut self, new_sequence_number: u128) {
         match self {
             GarlicMessage::Forward { clove, .. } => {
-                self = &mut GarlicMessage::Forward {
+                *self = GarlicMessage::Forward {
                     sequence_number: new_sequence_number,
                     clove: clove.update_sequence(new_sequence_number)
                 };
             }
             GarlicMessage::UpdateAlt { alt_node, .. } => {
-                self = &mut GarlicMessage::UpdateAlt {
+                *self = GarlicMessage::UpdateAlt {
                     sequence_number: new_sequence_number,
                     alt_node: alt_node.clone(),
                 };

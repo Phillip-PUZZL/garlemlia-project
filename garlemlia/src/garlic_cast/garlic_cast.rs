@@ -553,7 +553,7 @@ impl GarlicCast {
 
                 let task = tokio::spawn(async move {
 
-                    let send_msg = GarlicMessage::Forward {
+                    let send_msg = GarlicMessage::FindProxy {
                         sequence_number,
                         clove: clove.clone()
                     };
@@ -1012,7 +1012,7 @@ impl GarlicCast {
         }
     }
 
-    async fn forward_to_new(&self, sequence_number: u128, node: Node, msg: Clove) {
+    async fn forward_find_proxy(&self, sequence_number: u128, node: Node, msg: Clove) {
         let mut keep_trying = true;
         while keep_trying {
             // Basically just try the fuck out of some nodes until one responds with an IsAlive message
@@ -1027,7 +1027,7 @@ impl GarlicCast {
 
             let forward_node = choose_list.choose(&mut rand::rng()).unwrap().clone();
 
-            let new_msg = GarlicMessage::Forward {
+            let new_msg = GarlicMessage::FindProxy {
                 sequence_number,
                 clove: msg.clone()
             };
@@ -1149,14 +1149,14 @@ impl GarlicCast {
         }
     }
 
-    async fn accept_proxy(&self, cache: CloveCache, sequence_number: u128, second_clove: Clove, node: Node) {
+    async fn accept_proxy(&self, cache: CloveCache, sequence_number: u128, second_clove: Clove, node: Node) -> Option<Proxy> {
         let first_clove = cache.cloves.get(&sequence_number).unwrap().clone();
         let msg_from_initiator = GarlicCast::get_message_from_cloves(first_clove.clone().clove, second_clove.clone()).await;
 
         if first_clove.from.id == node.id {
             println!("COULD NOT ACCEPT PROXY, RECEIVED FROM SAME NODE {}", node.address);
             self.cache.lock().await.remove_clove(sequence_number);
-            return;
+            return None;
         }
 
         match msg_from_initiator {
@@ -1188,8 +1188,12 @@ impl GarlicCast {
 
                 println!("{} :: PROXY :: {}", Utc::now(), self.local_node.address);
                 self.forward_proxy_accept(proxy.clone(), sequence_number).await;
+
+                Some(proxy)
             },
-            _ => {}
+            _ => {
+                None
+            }
         }
     }
 
@@ -1285,7 +1289,7 @@ impl GarlicCast {
     }
 
     pub async fn send_alt(&self, n_1: Option<Node>, n_2: Option<Node>, sequence_number: u128, alt: CloveNode) {
-        let new_msg = GarlicMessage::UpdateAlt {
+        let mut new_msg = GarlicMessage::UpdateAlt {
             sequence_number,
             alt_node: alt.clone(),
         };
@@ -1313,7 +1317,7 @@ impl GarlicCast {
                 }
                 _ => {
                     println!("{} :: UPDATEALT {} :: FAILURE : OFFLINE :: {} -> {}", time, sequence_number, self.local_node.address, n_1.address);
-                    n_1_success = self.replace_with_alt(CloveNode { sequence_number, node: n_1 }, new_msg).await;
+                    n_1_success = self.replace_with_alt(CloveNode { sequence_number, node: n_1 }, new_msg.clone()).await;
                 }
             }
         }
@@ -1349,22 +1353,14 @@ impl GarlicCast {
     pub async fn recv(&self, node: Node, garlic_msg: GarlicMessage) -> Result<Option<GarlemliaMessage>, MessageError> {
         let socket = Arc::clone(&self.socket);
         match garlic_msg.clone() {
-            // Have to do following TODOs because need to configure it properly for if proxy or initiator
-            // disconnect and their neighbors attempt to forward to them and switches to alternate.
-            // The alternate will try to forward to the bogus next_hop and that next_hop will currently
-            // attempt to forward this message to a new node indefinitely since it thinks it is a Find Proxy
-            // request.
-            // TODO: Configure FindProxy
-            // TODO: Add a check for sequence number associations in Forward
-            // TODO: Remove FindProxy specific stuff from Forward
-            GarlicMessage::Forward { sequence_number, clove } => {
+            GarlicMessage::FindProxy { sequence_number, clove } => {
                 {
                     if let Err(e) = self.message_handler.send_no_recv(&Arc::from(socket), self.local_node.clone(), &node.address, &GarlicMessage::build_send_is_alive(self.local_node.clone())).await {
                         eprintln!("Failed to send IsAlive to {}: {:?}", node.address, e);
                     }
                 }
 
-                println!("{} :: FORWARD {}[{}] :: {} -> {}", Utc::now(), sequence_number, clove.index, node.address, self.local_node.address);
+                println!("{} :: FINDPROXY {}[{}] :: {} -> {}", Utc::now(), sequence_number, clove.index, node.address, self.local_node.address);
 
                 let mut same_clove = false;
                 let clove_data;
@@ -1384,54 +1380,76 @@ impl GarlicCast {
 
                 let mut node_actual = node.clone();
                 let msg = clove.clone();
-                let next;
                 if same_clove {
                     // Received the exact same clove twice
                     // Set the 'from' node to the old node since it is a shorter path
                     println!("{} :: SAME CLOVE {}[{}] :: {}", Utc::now(), sequence_number, clove.index, self.local_node.address);
                     node_actual = old_node.unwrap();
-                    next = Err(());
-                    {
-                        let mut cache = self.cache.lock().await;
-                        cache.seen(sequence_number);
-                    }
+                }
+
+                let cache;
+                {
+                    let mut cache_lock = self.cache.lock().await;
+                    cache_lock.seen(sequence_number);
+                    cache = cache_lock.clone();
+                }
+
+                if cache.cloves.contains_key(&sequence_number) && !same_clove {
+                    let new_proxy = self.accept_proxy(cache, sequence_number, clove, node_actual).await.unwrap();
+
+                    let new_alt = self.find_alt(Some(node.clone()), None, new_proxy.sequence_number).await;
+                    self.send_alt(Some(node), None, new_proxy.sequence_number, new_alt).await;
+                } else if random_bool(FORWARD_P) {
+                    // First time seeing this sequence number and forwarding it
+                    self.forward_find_proxy(sequence_number, node_actual.clone(), msg.clone()).await;
                 } else {
+                    println!("{} :: NOT FORWARDING {}[{}] :: {}", Utc::now(), sequence_number, clove.index, self.local_node.address);
+                    // Not forwarding, but still add to own cache
+                    let original_clove = CloveNode { sequence_number, node: node_actual.clone() };
                     {
                         let mut cache = self.cache.lock().await;
-                        next = cache.get_forward_node(CloveNode { sequence_number, node: node_actual.clone() });
+                        cache.insert_next_hop(original_clove.clone(), None);
+                        // Insert clove
+                        cache.insert_clove(msg.clone(), node_actual.clone());
+                        // Insert associations
+                        cache.insert_association(sequence_number, original_clove.clone());
+                        // Insert seen last
                         cache.seen(sequence_number);
                     }
+                }
+                Ok(None)
+            }
+            GarlicMessage::Forward { sequence_number, clove } => {
+                {
+                    if let Err(e) = self.message_handler.send_no_recv(&Arc::from(socket), self.local_node.clone(), &node.address, &GarlicMessage::build_send_is_alive(self.local_node.clone())).await {
+                        eprintln!("Failed to send IsAlive to {}: {:?}", node.address, e);
+                    }
+                }
+
+                println!("{} :: FORWARD {}[{}] :: {} -> {}", Utc::now(), sequence_number, clove.index, node.address, self.local_node.address);
+
+                let msg = clove.clone();
+                let next;
+                {
+                    let mut cache = self.cache.lock().await;
+                    next = cache.get_forward_node(CloveNode { sequence_number, node: node.clone() });
+                    cache.seen(sequence_number);
                 }
 
                 match next {
                     Ok(info) => {
                         match info {
                             Some(next_node) => {
-                                let cache;
-                                {
-                                    cache = self.cache.lock().await.clone();
-                                }
-                                if cache.cloves.contains_key(&sequence_number) {
-                                    self.accept_proxy(cache, sequence_number, clove, node_actual).await;
-                                } else {
-                                    self.forward(next_node, msg).await;
-                                }
+                                self.forward(next_node, msg).await;
                                 Ok(None)
                             }
                             None => {
-                                let cache;
+                                // Receive message part from proxy or from initiator
+                                let messages_from;
                                 {
-                                    cache = self.cache.lock().await.clone();
-                                }
-                                if cache.cloves.contains_key(&sequence_number) {
-                                    self.accept_proxy(cache, sequence_number, clove, node_actual).await;
-                                    // TODO: Setup alternate node
-                                } else {
-                                    // Receive message part from proxy or from initiator
                                     let mut collected_messages = self.collected_messages.lock().await;
                                     let msgs = collected_messages.get_mut(&sequence_number);
 
-                                    let messages_from;
                                     if let Some(msg_vec) = msgs {
                                         msg_vec.push(garlic_msg);
                                         messages_from = msg_vec.clone();
@@ -1439,8 +1457,11 @@ impl GarlicCast {
                                         collected_messages.insert(sequence_number, vec![garlic_msg.clone()]);
                                         messages_from = vec![garlic_msg];
                                     }
-                                    // TODO: Check if has second part of message already
-                                    // TODO: Put message together if it has the second part already
+                                }
+
+                                if messages_from.len() == 2 {
+                                    // Has second portion of the message already
+                                    // TODO: Put message together
                                     println!("{} GarlicCast::recv():Completed Clove Received", self.local_node.address);
                                 }
                                 Ok(None)
@@ -1448,31 +1469,6 @@ impl GarlicCast {
                         }
                     }
                     Err(_) => {
-                        let cache;
-                        {
-                            cache = self.cache.lock().await.clone();
-                        }
-                        if cache.cloves.contains_key(&sequence_number) && !same_clove {
-                            self.accept_proxy(cache, sequence_number, clove, node_actual).await;
-                            // TODO: Setup alternate node
-                        } else if random_bool(FORWARD_P) {
-                            // First time seeing this sequence number and forwarding it
-                            self.forward_to_new(sequence_number, node_actual.clone(), msg.clone()).await;
-                        } else {
-                            println!("{} :: NOT FORWARDING {}[{}] :: {}", Utc::now(), sequence_number, clove.index, self.local_node.address);
-                            // Not forwarding, but still add to own cache
-                            let original_clove = CloveNode { sequence_number, node: node_actual.clone() };
-                            {
-                                let mut cache = self.cache.lock().await;
-                                cache.insert_next_hop(original_clove.clone(), None);
-                                // Insert clove
-                                cache.insert_clove(msg.clone(), node_actual.clone());
-                                // Insert associations
-                                cache.insert_association(sequence_number, original_clove.clone());
-                                // Insert seen last
-                                cache.seen(sequence_number);
-                            }
-                        }
                         Ok(None)
                     }
                 }

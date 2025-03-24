@@ -1,6 +1,6 @@
 use garlemlia::garlemlia::garlemlia::Garlemlia;
 use garlemlia::garlemlia_structs::garlemlia_structs::{Node, RoutingTable};
-use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, simulated_to_gmessage, SIM, GarlemliaInfo};
+use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, simulated_to_gmessage, SIM, GarlemliaInfo, save_simulated_nodes};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use std::net::SocketAddr;
@@ -60,12 +60,12 @@ async fn check_node_discover() {
             }
 
             // Save the modified nodes back to a new file
-            /*let new_file_path = "./test_nodes_stored.json";
+            let new_file_path = "./test_nodes_stored.json";
             if let Err(e) = save_simulated_nodes(new_file_path, &updated_nodes).await {
                 eprintln!("Error saving nodes: {}", e);
             } else {
                 println!("Saved updated nodes to {}", new_file_path);
-            }*/
+            }
         }
         Err(e) => {
             eprintln!("Error loading nodes: {}", e);
