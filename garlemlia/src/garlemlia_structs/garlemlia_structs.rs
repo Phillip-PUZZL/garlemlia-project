@@ -693,10 +693,12 @@ pub struct ChunkInfo {
     size: usize
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaData {
     Value { id: u128, value: String },
     ValueResponse { value: String },
+    Validator { id: u128, proxy_ids: Vec<u128>, proxies: HashMap<u128, SocketAddr> },
+    ValidatorResponse { proxy: SocketAddr },
     FileName { id: u128, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location_seed: u128, metadata_seed_rotation: f64, key_location_seed: u128, key_seed_rotation: f64 },
     FileNameResponse { name: String, file_type: String, size: usize, categories: Vec<String> },
     MetaData { id: u128, file_id: u128, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location_seed: u64, metadata_seed_rotation: f64 },
@@ -709,7 +711,7 @@ pub enum GarlemliaData {
     FileChunkResponse { chunk_size: usize, data: Vec<u8> }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaMessage {
     FindNode { id: u128, sender: Node },
     Store { key: u128, value: GarlemliaData, sender: Node },

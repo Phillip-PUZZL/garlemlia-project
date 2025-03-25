@@ -16,11 +16,14 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
 use std::sync::Arc;
+use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use crate::file_utils::garlemlia_files::FileStorage;
 
 lazy_static! {
     pub static ref SIM: Arc<Mutex<Simulator>> = Arc::new(Mutex::new(Simulator::new_empty()));
@@ -147,7 +150,8 @@ pub struct FileNode {
     pub id: u128,
     pub address: String,
     pub routing_table: SerializableRoutingTable,
-    pub data_store: HashMap<u128, String>,
+    pub data_store: HashMap<u128, GarlemliaData>,
+    pub file_storage: String,
     pub garlic: SerializableGarlicCast
 }
 
@@ -155,16 +159,18 @@ pub struct FileNode {
 pub struct SimulatedNode {
     pub node: Node,
     pub routing_table: Arc<Mutex<RoutingTable>>,
-    pub data_store: Arc<Mutex<HashMap<u128, String>>>,
+    pub data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
+    pub file_storage: Arc<Mutex<FileStorage>>,
     pub garlic: Arc<Mutex<GarlicCast>>
 }
 
 impl SimulatedNode {
-    pub fn new(node: Node, rt: RoutingTable, ds: HashMap<u128, String>, gc: GarlicCast) -> SimulatedNode {
+    pub fn new(node: Node, rt: RoutingTable, ds: HashMap<u128, GarlemliaData>, gc: GarlicCast, fs: FileStorage) -> SimulatedNode {
         SimulatedNode {
             node,
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(ds)),
+            file_storage: Arc::new(Mutex::new(fs)),
             garlic: Arc::new(Mutex::new(gc))
         }
     }
@@ -173,7 +179,7 @@ impl SimulatedNode {
         self.routing_table.lock().await.update_from(rt).await;
     }
 
-    async fn set_data_store(&mut self, data_store: &mut HashMap<u128, String>) {
+    async fn set_data_store(&mut self, data_store: &mut HashMap<u128, GarlemliaData>) {
         {
             self.data_store.lock().await.clear();
         }
@@ -626,8 +632,17 @@ impl GMessage for SimulatedMessageHandler {
     }
 }
 
-async fn file_node_to_simulated(file_node: FileNode) -> SimulatedNode {
-    SimulatedNode::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() }, file_node.routing_table.to_routing_table(), file_node.data_store, file_node.garlic.to_garlic())
+async fn file_node_to_simulated(file_node: FileNode) -> Option<SimulatedNode> {
+    let file_storage = FileStorage::load(file_node.file_storage).await;
+    match file_storage {
+        Ok(file_storage) => {
+            Some(SimulatedNode::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() }, file_node.routing_table.to_routing_table(), file_node.data_store, file_node.garlic.to_garlic(), file_storage))
+        }
+        Err(em) => {
+            println!("Error loading file storage: {:?}", em);
+            None
+        }
+    }
 }
 
 async fn simulated_node_to_file(sim_node: SimulatedNode) -> FileNode {
@@ -636,6 +651,7 @@ async fn simulated_node_to_file(sim_node: SimulatedNode) -> FileNode {
         address: sim_node.node.address.to_string(),
         routing_table: SerializableRoutingTable::from(sim_node.routing_table.lock().await.clone()).await,
         data_store: sim_node.data_store.lock().await.clone(),
+        file_storage: sim_node.file_storage.lock().await.file_storage_settings_path.clone(),
         garlic: SerializableGarlicCast::from(sim_node.garlic.lock().await.clone()).await
     }
 }
@@ -649,7 +665,10 @@ pub async fn load_simulated_nodes(file_path: &str) -> Result<Vec<SimulatedNode>,
     let mut simulated_nodes = vec![];
     for mut node in file_nodes {
         node.garlic.known_nodes.extend(node.routing_table.clone().to_routing_table().flat_nodes().await.clone());
-        simulated_nodes.push(file_node_to_simulated(node).await);
+        let sim_node = file_node_to_simulated(node).await;
+        if sim_node.is_some() {
+            simulated_nodes.push(sim_node.unwrap());
+        }
     }
     Ok(simulated_nodes)
 }
@@ -659,6 +678,7 @@ pub async fn save_simulated_nodes(file_path: &str, nodes: &Vec<SimulatedNode>) -
     let mut file_nodes = vec![];
     for node in nodes {
         {
+            node.file_storage.lock().await.save().await?;
             let garlic = node.garlic.lock().await;
             garlic.set_known(vec![]).await;
         }
@@ -691,23 +711,25 @@ pub struct KeyFileData {
     pub private_key: String,
 }
 
-async fn load_keys(file_path: &str) -> Result<Vec<KeyFileData>, Box<dyn std::error::Error>> {
-    let mut file = File::open(file_path).await?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents).await?;
-    let file_keys: Vec<KeyFileData> = serde_json::from_str(&contents)?;
-    Ok(file_keys)
-}
+impl KeyFileData {
+    async fn load(file_path: &str) -> Result<Vec<KeyFileData>, Box<dyn std::error::Error>> {
+        let mut file = File::open(file_path).await?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).await?;
+        let file_keys: Vec<KeyFileData> = serde_json::from_str(&contents)?;
+        Ok(file_keys)
+    }
 
-async fn save_keys(file_path: &str, keys: &Vec<KeyFileData>) -> Result<(), Box<dyn std::error::Error>> {
-    let json_string = serde_json::to_string_pretty(&keys)?;
-    let mut file = File::create(file_path).await?;
-    file.write_all(json_string.as_bytes()).await?;
-    Ok(())
+    async fn save(file_path: &str, keys: &Vec<KeyFileData>) -> Result<(), Box<dyn std::error::Error>> {
+        let json_string = serde_json::to_string_pretty(&keys)?;
+        let mut file = File::create(file_path).await?;
+        file.write_all(json_string.as_bytes()).await?;
+        Ok(())
+    }
 }
 
 pub async fn generate_keys(file_path: &str, count: usize, max_threads: u8) {
-    let mut keys = load_keys(file_path).await.unwrap();
+    let mut keys = KeyFileData::load(file_path).await.unwrap();
     let curr_count = keys.len();
 
     let mut index = curr_count;
@@ -738,7 +760,7 @@ pub async fn generate_keys(file_path: &str, count: usize, max_threads: u8) {
             }
         }
 
-        save_keys(file_path, &keys).await.unwrap();
+        KeyFileData::save(file_path, &keys).await.unwrap();
     }
 }
 
@@ -787,6 +809,7 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>, mut keys: Vec<KeyFile
             node: nodes[0].node.clone(),
             routing_table: nodes[0].routing_table.clone(),
             data_store: nodes[0].data_store.clone(),
+            file_storage: nodes[0].file_storage.clone(),
             garlic: nodes[0].garlic.clone()
         }).await;
     }
@@ -831,7 +854,12 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>, mut keys: Vec<KeyFile
             }
         }
 
-        let mut run_node = Garlemlia::new_with_details(node.node.id, "127.0.0.1", node.node.address.port(), RoutingTable::new(node.node.clone()), simulated_to_gmessage(node.node.address), get_global_socket().unwrap().clone(), pub_k, priv_k);
+        let node_fs;
+        {
+            node_fs = node.file_storage.lock().await.clone();
+        }
+
+        let mut run_node = Garlemlia::new_with_details(node.node.id, "127.0.0.1", node.node.address.port(), RoutingTable::new(node.node.clone()), simulated_to_gmessage(node.node.address), get_global_socket().unwrap().clone(), pub_k, priv_k, Box::new(Path::new("./simulated_nodes_files"))).await;
 
         add_running(node.node.clone(), GarlemliaInfo::from(Arc::clone(&run_node.node), Arc::clone(&run_node.message_handler), Arc::clone(&run_node.routing_table), Arc::clone(&run_node.data_store), Arc::clone(&run_node.garlic))).await;
 
@@ -851,10 +879,12 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>, mut keys: Vec<KeyFile
             rt.update_from(run_node.routing_table.lock().await.clone()).await;
             let ds = run_node.data_store.lock().await.clone();
             let gar = run_node.garlic.lock().await.clone();
+            let fs = run_node.file_storage.lock().await.clone();
             SIM.lock().await.create_node(SimulatedNode {
                 node: node_actual.clone(),
                 routing_table: Arc::new(Mutex::new(rt.clone())),
                 data_store: Arc::new(Mutex::new(ds)),
+                file_storage: Arc::new(Mutex::new(fs)),
                 garlic: Arc::new(Mutex::new(gar))
             }).await;
         }
@@ -871,18 +901,42 @@ pub async fn create_random_simulated_nodes(count: u16) -> Vec<SimulatedNode> {
     let mut simulated_nodes = vec![];
     let mut used_ids = HashSet::new();
 
+    let dir_path = Path::new("./simulated_nodes_files");
+
+    if dir_path.exists() && dir_path.is_dir() {
+        fs::remove_dir_all(dir_path).await.unwrap();
+        println!("Old Simulated Node Folder Removed!");
+    }
+
+    fs::create_dir(dir_path).await.unwrap();
+
     for i in 0..count {
         let mut id = rand::random::<u128>();
         while used_ids.contains(&id) {
             println!("TRIED TO USE COPY OF ID {}", id);
             id = rand::random::<u128>();
         }
+
+        let mut dir_id = dir_path.join(id.to_string());
+        dir_id.push("downloads");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+        dir_id.pop();
+        dir_id.push("chunks");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+        dir_id.pop();
+        dir_id.push("temp_chunks");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+
+        let root_dir = format!("./simulated_nodes_files/{}", id);
+        let file_storage = FileStorage::new(format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
+
         used_ids.insert(id);
         let node = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + i)};
         simulated_nodes.push(SimulatedNode {
             node: node.clone(),
             routing_table: Arc::new(Mutex::new(RoutingTable::new(node.clone()))),
             data_store: Arc::new(Mutex::new(HashMap::new())),
+            file_storage: Arc::new(Mutex::new(file_storage)),
             garlic: Arc::new(Mutex::new(GarlicCast::new(get_global_socket().unwrap(), node.clone(), Arc::new(simulated_to_gmessage(node.address)), vec![], None, None)))
         });
     }
@@ -893,7 +947,7 @@ pub async fn create_random_simulated_nodes(count: u16) -> Vec<SimulatedNode> {
 pub async fn run_create_network(updated_file_path: &str, count: u16, keys_file: &str) {
     let nodes = create_random_simulated_nodes(count).await;
 
-    let keys = load_keys(keys_file).await;
+    let keys = KeyFileData::load(keys_file).await;
 
     match keys {
         Ok(keys) => {

@@ -1,16 +1,17 @@
+use garlemlia::garlemlia::garlemlia::Garlemlia;
+use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, GarlemliaData, GarlemliaMessageHandler, Node, RoutingTable, DEFAULT_K};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use garlemlia::garlemlia::garlemlia::Garlemlia;
-use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, GarlemliaMessageHandler, Node, RoutingTable, DEFAULT_K};
 
 pub mod hash_tests;
 pub mod gc_tests;
 pub mod file_tests;
 
 async fn create_test_node(id: u128, port: u16) -> Garlemlia {
-    let mut node = Garlemlia::new(id, "127.0.0.1", port, RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)}), GarlemliaMessageHandler::create(1)).await;
+    let mut node = Garlemlia::new(id, "127.0.0.1", port, RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)}), GarlemliaMessageHandler::create(1), Box::new(Path::new("./running_nodes_files"))).await;
 
     // Spawn a task to keep the node running and listening
     node.start(Arc::clone(&node.socket)).await;
@@ -163,7 +164,7 @@ async fn test_iterative_find_value() {
     sleep(Duration::from_secs(1)).await;
 
     // Store a value in node1
-    node1.store_value(Arc::clone(&node1.socket), 2, "Hello, world!".to_string()).await;
+    node1.store_value(Arc::clone(&node1.socket), 2, GarlemliaData::Value { id: 2, value: "Hello, world!".to_string() }).await;
     sleep(Duration::from_secs(1)).await;
 
     // Attempt to retrieve the stored value from node4
@@ -174,5 +175,21 @@ async fn test_iterative_find_value() {
     node3.stop().await;
     node4.stop().await;
 
-    assert_eq!(value, Some("Hello, world!".to_string()), "Value should be found");
+    match value {
+        Some(value) => {
+            match value {
+                GarlemliaData::Value { id: _, value } => {
+                    assert_eq!(value, "Hello, world!".to_string(), "Value should 'Hello, World!'");
+                }
+                _ => {
+                    assert!(false, "Value should be value type");
+                }
+            }
+        }
+        _ => {
+            assert!(false, "Value should be found");
+        }
+    }
+
+
 }

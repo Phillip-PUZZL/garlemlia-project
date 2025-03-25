@@ -1,17 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr};
+use std::path::Path;
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use rand_core::OsRng;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex};
-use tokio::task;
+use tokio::{fs, task};
 
 use crate::garlemlia_structs::garlemlia_structs;
 use crate::garlic_cast::garlic_cast;
 use garlemlia_structs::{Node, MessageChannel, DEFAULT_K, GMessage, GarlemliaMessage, RoutingTable, LOOKUP_ALPHA};
 use garlic_cast::{GarlicCast};
+use crate::file_utils::garlemlia_files::FileStorage;
 use crate::garlemlia_structs::garlemlia_structs::GarlemliaData;
 
 // Kademlia Struct
@@ -23,6 +25,7 @@ pub struct Garlemlia {
     pub message_handler: Arc<Box<dyn GMessage>>,
     pub routing_table: Arc<Mutex<RoutingTable>>,
     pub data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
+    pub file_storage: Arc<Mutex<FileStorage>>,
     pub garlic: Arc<Mutex<GarlicCast>>,
     stop_signal: Arc<AtomicBool>,
     join_handle: Arc<Option<task::JoinHandle<()>>>,
@@ -32,7 +35,20 @@ pub struct Garlemlia {
 // TODO: which have not been seen in an hour + evicting those which fail
 // TODO: Add RPC ID's to messages?
 impl Garlemlia {
-    pub async fn new(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>) -> Self {
+    pub async fn new(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, file_storage_path: Box<&Path>) -> Self {
+        let mut dir_id = file_storage_path.join(id.to_string());
+        dir_id.push("downloads");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+        dir_id.pop();
+        dir_id.push("chunks");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+        dir_id.pop();
+        dir_id.push("temp_chunks");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+
+        let root_dir = format!("{}/{}", file_storage_path.to_str().unwrap(), id);
+        let file_storage = FileStorage::new(format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
+
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
         let socket = Arc::new(UdpSocket::bind(format!("{}:{}", address, port)).await.unwrap());
 
@@ -50,13 +66,27 @@ impl Garlemlia {
             message_handler: Arc::new(msg_handler),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
+            file_storage: Arc::new(Mutex::new(file_storage)),
             garlic: Arc::new(Mutex::new(garlic)),
             stop_signal: Arc::new(AtomicBool::new(false)),
             join_handle: Arc::new(None),
         }
     }
 
-    pub fn new_with_details(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, socket: Arc<UdpSocket>, public_key: RsaPublicKey, private_key: RsaPrivateKey) -> Self {
+    pub async fn new_with_details(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, socket: Arc<UdpSocket>, public_key: RsaPublicKey, private_key: RsaPrivateKey, file_storage_path: Box<&Path>) -> Self {
+        let mut dir_id = file_storage_path.join(id.to_string());
+        dir_id.push("downloads");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+        dir_id.pop();
+        dir_id.push("chunks");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+        dir_id.pop();
+        dir_id.push("temp_chunks");
+        fs::create_dir_all(dir_id.clone()).await.unwrap();
+
+        let root_dir = format!("{}/{}", file_storage_path.to_str().unwrap(), id);
+        let file_storage = FileStorage::new(format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
+
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
 
         let message_handler = Arc::new(msg_handler);
@@ -70,6 +100,7 @@ impl Garlemlia {
             message_handler,
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
+            file_storage: Arc::new(Mutex::new(file_storage)),
             garlic: Arc::new(Mutex::new(garlic)),
             stop_signal: Arc::new(AtomicBool::new(false)),
             join_handle: Arc::new(None),
@@ -84,7 +115,7 @@ impl Garlemlia {
         self.routing_table.lock().await.update_from(rt).await;
     }
 
-    pub async fn set_data_store(&self, data_store: &mut HashMap<u128, String>) {
+    pub async fn set_data_store(&self, data_store: &mut HashMap<u128, GarlemliaData>) {
         let mut ds = self.data_store.lock().await;
         ds.clear();
 
@@ -251,6 +282,7 @@ impl Garlemlia {
                         GarlemliaMessage::SearchFile { search_id, proxy_id, search_term, sender } => {
                             let mut rt = routing_table.lock().await;
                             rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
+                            // TODO: Search data store for file names which are close to the search_term
                         }
 
                         GarlemliaMessage::AgreeAlt { alt_sequence_number, sender } => {

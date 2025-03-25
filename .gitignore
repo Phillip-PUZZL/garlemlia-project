@@ -1,2 +1,4 @@
 /target
+/running_nodes_files
+/simulated_nodes_files
 *Cargo.lock
