@@ -1,6 +1,6 @@
 use crate::garlemlia::garlemlia;
 use crate::garlemlia_structs::garlemlia_structs;
-use crate::garlemlia_structs::garlemlia_structs::SerializableRoutingTable;
+use crate::garlemlia_structs::garlemlia_structs::{GarlemliaData, SerializableRoutingTable};
 use crate::garlic_cast::garlic_cast;
 use crate::garlic_cast::garlic_cast::SerializableGarlicCast;
 use async_trait::async_trait;
@@ -54,7 +54,7 @@ pub struct GarlemliaInfo {
     pub node: Arc<Mutex<Node>>,
     pub message_handler: Arc<Box<dyn GMessage>>,
     pub routing_table: Arc<Mutex<RoutingTable>>,
-    pub data_store: Arc<Mutex<HashMap<u128, String>>>,
+    pub data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
     pub garlic: Arc<Mutex<GarlicCast>>,
 }
 
@@ -62,7 +62,7 @@ impl GarlemliaInfo {
     pub fn from(node: Arc<Mutex<Node>>,
                 message_handler: Arc<Box<dyn GMessage>>,
                 routing_table: Arc<Mutex<RoutingTable>>,
-                data_store: Arc<Mutex<HashMap<u128, String>>>,
+                data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
                 garlic: Arc<Mutex<GarlicCast>>) -> GarlemliaInfo {
         GarlemliaInfo {
             node,
@@ -215,12 +215,12 @@ async fn add_to_routing_table(routing_table: Arc<Mutex<RoutingTable>>, node: Nod
 }
 
 async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
-                                  data_store: Arc<Mutex<HashMap<u128, String>>>,
-                                  garlic_cast: Arc<Mutex<GarlicCast>>,
-                                  sender_node: Node,
-                                  self_node: Node,
-                                  msg: GarlemliaMessage,
-                                  is_sim: bool) -> Result<GarlemliaMessage, Option<MessageError>> {
+                               data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
+                               garlic_cast: Arc<Mutex<GarlicCast>>,
+                               sender_node: Node,
+                               self_node: Node,
+                               msg: GarlemliaMessage,
+                               is_sim: bool) -> Result<GarlemliaMessage, Option<MessageError>> {
     match msg {
         GarlemliaMessage::FindNode { id, .. } => {
             // Add the sender to the routing table

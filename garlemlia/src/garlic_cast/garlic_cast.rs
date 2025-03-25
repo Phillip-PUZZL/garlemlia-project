@@ -1,10 +1,11 @@
 use crate::garlemlia_structs::garlemlia_structs;
+use crate::simulator::simulator::{get_global_socket, SimulatedMessageHandler};
 use aes::Aes256;
 use bincode;
 use chrono::{DateTime, Utc};
 use cipher::generic_array::GenericArray;
 use cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
-use garlemlia_structs::{Clove, CloveData, CloveNode, GMessage, GarlemliaMessage, GarlicMessage, CloveMessage, MessageError, Node};
+use garlemlia_structs::{Clove, CloveData, CloveMessage, CloveNode, GMessage, GarlemliaMessage, GarlicMessage, MessageError, Node};
 use rand::random_bool;
 use rand::seq::IndexedRandom;
 use rand::{rng, RngCore};
@@ -17,8 +18,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, MutexGuard};
-use crate::simulator::simulator::{get_global_socket, SimulatedMessageHandler};
+use tokio::sync::Mutex;
 
 pub const FORWARD_P: f64 = 0.95;
 
@@ -1466,6 +1466,24 @@ impl GarlicCast {
             }
         }
     }
+    
+    pub async fn manage_proxy_message(&self, req: CloveMessage) {
+        match req {
+            CloveMessage::SearchOverlay { .. } => {
+                
+            }
+            CloveMessage::SearchGarlemlia { .. } => {
+                
+            }
+            CloveMessage::ResponseDirect { .. } => {
+                
+            }
+            CloveMessage::ResponseWithValidator { .. } => {
+                
+            }
+            _ => {}
+        }
+    }
 
     pub async fn recv(&self, node: Node, garlic_msg: GarlicMessage) -> Result<Option<GarlemliaMessage>, MessageError> {
         let socket = Arc::clone(&self.socket);
@@ -1599,7 +1617,7 @@ impl GarlicCast {
                                             } else {
                                                 // THIS NODE IS THE PROXY, NOT THE INITIATOR
                                                 println!("{} :: CLOVEMESSAGE :: {} :: {:?}", Utc::now(), self.local_node.address, msg_from_initiator);
-                                                // TODO: Handle messages here
+                                                self.manage_proxy_message(msg_from_initiator).await;
                                             }
                                         } else {
                                             // Big failure

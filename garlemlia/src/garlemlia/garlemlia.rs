@@ -12,6 +12,7 @@ use crate::garlemlia_structs::garlemlia_structs;
 use crate::garlic_cast::garlic_cast;
 use garlemlia_structs::{Node, MessageChannel, DEFAULT_K, GMessage, GarlemliaMessage, RoutingTable, LOOKUP_ALPHA};
 use garlic_cast::{GarlicCast};
+use crate::garlemlia_structs::garlemlia_structs::GarlemliaData;
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -21,7 +22,7 @@ pub struct Garlemlia {
     pub receive_addr: SocketAddr,
     pub message_handler: Arc<Box<dyn GMessage>>,
     pub routing_table: Arc<Mutex<RoutingTable>>,
-    pub data_store: Arc<Mutex<HashMap<u128, String>>>,
+    pub data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
     pub garlic: Arc<Mutex<GarlicCast>>,
     stop_signal: Arc<AtomicBool>,
     join_handle: Arc<Option<task::JoinHandle<()>>>,
@@ -413,7 +414,7 @@ impl Garlemlia {
 
 
     // Perform an iterative lookup for a value in the DHT
-    pub async fn iterative_find_value(&self, socket: Arc<UdpSocket>, key: u128) -> Option<String> {
+    pub async fn iterative_find_value(&self, socket: Arc<UdpSocket>, key: u128) -> Option<GarlemliaData> {
         let self_node = self.get_node().await;
         // Check if this node has the value first
         let local = self.data_store.lock().await.get(&key).cloned();
@@ -552,7 +553,7 @@ impl Garlemlia {
         None
     }
 
-    pub async fn store_value(&mut self, socket: Arc<UdpSocket>, key: u128, value: String) -> Vec<Node> {
+    pub async fn store_value(&mut self, socket: Arc<UdpSocket>, key: u128, value: GarlemliaData) -> Vec<Node> {
         let self_node = self.get_node().await;
         // Find the closest nodes to store the value
         let mut closest_nodes = self.iterative_find_node(Arc::clone(&socket), key).await;

@@ -686,11 +686,35 @@ impl GMessage for GarlemliaMessageHandler {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChunkInfo {
+    index: usize,
+    enc_chunk_id: u128,
+    chunk_id: u128,
+    size: usize
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GarlemliaData {
+    Value { id: u128, value: String },
+    ValueResponse { value: String },
+    FileName { id: u128, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location_seed: u128, metadata_seed_rotation: f64, key_location_seed: u128, key_seed_rotation: f64 },
+    FileNameResponse { name: String, file_type: String, size: usize, categories: Vec<String> },
+    MetaData { id: u128, file_id: u128, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location_seed: u64, metadata_seed_rotation: f64 },
+    MetaDataResponse { file_id: u128, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
+    FileKey { id: u128, enc_file_id: u128, decryption_key: String, key_location_seed: u64, key_seed_rotation: f64 },
+    FileKeyResponse { enc_file_id: u128, decryption_key: String },
+    ChunkKey { id: u128, decryption_key: String },
+    ChunkKeyResponse { decryption_key: String },
+    FileChunk { id: u128, chunk_file: String },
+    FileChunkResponse { chunk_size: usize, data: Vec<u8> }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum GarlemliaMessage {
     FindNode { id: u128, sender: Node },
-    Store { key: u128, value: String, sender: Node },
+    Store { key: u128, value: GarlemliaData, sender: Node },
     FindValue { key: u128, sender: Node },
-    Response { nodes: Vec<Node>, value: Option<String>, sender: Node },
+    Response { nodes: Vec<Node>, value: Option<GarlemliaData>, sender: Node },
     Garlic { msg: GarlicMessage, sender: Node },
     Ping { sender: Node },
     Pong { sender: Node },

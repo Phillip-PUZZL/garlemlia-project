@@ -239,7 +239,7 @@ async fn garlemlia_console() {
 
 #[tokio::main]
 async fn main() {
-    check_node_discover().await;
+    create_test_nodes().await;
 }
 
 // Chapter 1: Introduction
