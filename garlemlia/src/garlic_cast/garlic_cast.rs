@@ -11,7 +11,6 @@ use rand::seq::IndexedRandom;
 use rand::{rng, RngCore};
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
-use rsa::sha2::Digest;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;

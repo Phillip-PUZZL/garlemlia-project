@@ -103,7 +103,7 @@ impl RotatingHash {
 
         let counter_bytes = periods_elapsed.to_be_bytes();
 
-        let mut mac = HmacSha256::new_from_slice(&seed.to_big_endian());
+        let mac = HmacSha256::new_from_slice(&seed.to_big_endian());
 
         match mac {
             Ok(mut mac) => {

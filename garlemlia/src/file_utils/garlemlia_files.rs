@@ -79,29 +79,11 @@ impl FileInfo {
     }
 
     pub async fn assemble(&self, chunk_files_path: Box<Path>) -> Result<String, (u8, String)> {
-        let file_id;
-        let enc_file_id;
-        match self.file_id {
-            Some(self_file_id) => {
-                file_id = self_file_id;
-            }
-            _ => {
-                return Err((0, "No file id found".to_string()));
-            }
-        }
-        match self.enc_file_id {
-            Some(self_enc_file_id) => {
-                enc_file_id = self_enc_file_id;
-            }
-            _ => {
-                return Err((1, "No encrypted file id found".to_string()));
-            }
-        }
         if self.needed_chunks.len() > 0 {
-            return Err((2, "Do not have all file chunks".to_string()));
+            return Err((0, "Do not have all file chunks".to_string()));
         }
         if self.downloaded_chunks.len() != self.all_chunks.len() {
-            return Err((3, "Downloaded chunks count is not equivalent to all chunks listed".to_string()));
+            return Err((1, "Downloaded chunks count is not equivalent to all chunks listed".to_string()));
         }
 
         let mut chunks_ordered = self.all_chunks.clone();
@@ -116,7 +98,7 @@ impl FileInfo {
 
         let encrypted_file_path = Path::new(&encrypted_file_location);
         if encrypted_file_path.exists() {
-            return Err((4, format!("File at {} already exists", encrypted_file_location)));
+            return Err((2, format!("File at {} already exists", encrypted_file_location)));
         }
 
         let mut encrypted_file = File::create(encrypted_file_path).await.unwrap();
@@ -126,7 +108,7 @@ impl FileInfo {
             let chunk_file_location = format!("{}/{}", chunk_files_path.to_str().unwrap(), chunk_file_name);
             let chunk_file_res = File::open(chunk_file_location.clone()).await;
             if chunk_file_res.is_err() {
-                return Err((5, format!("Could not find chunk with ID {}", chunk_file_name)));
+                return Err((3, format!("Could not find chunk with ID {}", chunk_file_name)));
             }
             let mut chunk_file = chunk_file_res.unwrap();
 
@@ -134,19 +116,19 @@ impl FileInfo {
             let chunk_file_read = chunk_file.read_to_end(&mut chunk_data).await;
 
             if chunk_file_read.is_err() {
-                return Err((6, format!("Could not read chunk data from file {}", chunk_file_location)));
+                return Err((4, format!("Could not read chunk data from file {}", chunk_file_location)));
             }
 
             let enc_file_write = encrypted_file.write_all(&chunk_data).await;
 
             if enc_file_write.is_err() {
-                return Err((7, format!("Could not write to file {}", encrypted_file_location)));
+                return Err((5, format!("Could not write to file {}", encrypted_file_location)));
             }
 
             let chunk_delete = fs::remove_file(chunk_file_location.clone()).await;
 
             if chunk_delete.is_err() {
-                return Err((8, format!("Could not delete chunk file {}", chunk_file_location)));
+                return Err((6, format!("Could not delete chunk file {}", chunk_file_location)));
             }
         }
 
