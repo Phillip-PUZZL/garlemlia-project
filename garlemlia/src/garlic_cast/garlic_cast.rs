@@ -1316,7 +1316,7 @@ impl GarlicCast {
             starting_hops: hops_start,
         };
 
-        let cloves = GarlicCast::generate_cloves_no_rsa(proxy_info, 2, proxy.sequence_number);
+        let cloves = GarlicCast::generate_cloves_rsa(proxy_info, proxy.public_key, 2, proxy.sequence_number);
 
         let agreement_1 = GarlicMessage::ProxyAgree {
             sequence_number: old_sequence,
@@ -1854,7 +1854,7 @@ impl GarlicCast {
 
                                     if cloves.len() == 2 {
                                         if let Some(neighbor_1) = self.partial_proxies.lock().await.remove(&updated_sequence_number) {
-                                            let msg_from_initiator = GarlicCast::message_from_cloves_no_rsa(cloves[0].clone(), cloves[1].clone());
+                                            let msg_from_initiator = GarlicCast::message_from_cloves_rsa(cloves[0].clone(), cloves[1].clone(), self.private_key.clone().unwrap());
 
                                             match msg_from_initiator {
                                                 CloveMessage::ProxyInfo { public_key, starting_hops} => {

@@ -12,6 +12,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, Mutex};
 use tokio::time::{timeout, Duration};
+use crate::time_hash::time_based_hash::RotatingHash;
 
 pub fn u256_random() -> U256 {
     let mut rng = rng();
@@ -696,10 +697,9 @@ impl GMessage for GarlemliaMessageHandler {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChunkInfo {
-    index: usize,
-    enc_chunk_id: U256,
-    chunk_id: U256,
-    size: usize
+    pub index: usize,
+    pub chunk_id: U256,
+    pub size: usize
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -708,13 +708,13 @@ pub enum GarlemliaData {
     ValueResponse { value: String },
     Validator { id: U256, proxy_ids: Vec<U256>, proxies: HashMap<U256, SocketAddr> },
     ValidatorResponse { proxy: SocketAddr },
-    FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location_seed: U256, metadata_seed_rotation: f64, key_location_seed: U256, key_seed_rotation: f64 },
+    FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: RotatingHash, key_location: RotatingHash },
     FileNameResponse { name: String, file_type: String, size: usize, categories: Vec<String> },
-    MetaData { id: U256, file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location_seed: u64, metadata_seed_rotation: f64 },
+    MetaData { id: U256, file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
     MetaDataResponse { file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
-    FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location_seed: u64, key_seed_rotation: f64 },
+    FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location: RotatingHash },
     FileKeyResponse { enc_file_id: U256, decryption_key: String },
-    FileChunk { id: U256, chunk_file: String },
+    FileChunk { id: U256 },
     FileChunkResponse { chunk_size: usize, data: Vec<u8> }
 }
 
