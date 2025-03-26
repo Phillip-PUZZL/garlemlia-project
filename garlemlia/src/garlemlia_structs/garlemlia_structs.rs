@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use primitive_types::U256;
+use rand::{rng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
@@ -10,6 +12,13 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, Mutex};
 use tokio::time::{timeout, Duration};
+
+pub fn u256_random() -> U256 {
+    let mut rng = rng();
+    let mut buf = [0u8; 32];
+    rng.fill_bytes(&mut buf);
+    U256::from_big_endian(&buf)
+}
 
 /// Custom error type for messaging operations.
 #[derive(Debug, Clone)]
@@ -34,7 +43,7 @@ impl From<std::io::Error> for MessageError {
 /// Helper struct for a min-heap (using reverse ordering)
 #[derive(Eq)]
 pub struct HeapNode {
-    pub distance: u128,
+    pub distance: U256,
     pub node: Node,
 }
 
@@ -64,7 +73,7 @@ pub const LOOKUP_ALPHA: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Node {
-    pub id: u128,
+    pub id: U256,
     pub address: SocketAddr,
 }
 
@@ -110,7 +119,7 @@ impl KBucket {
         self.insert(node);
     }
 
-    pub fn contains(&self, node_id: u128) -> bool {
+    pub fn contains(&self, node_id: U256) -> bool {
         self.nodes.iter().any(|n| n.id == node_id)
     }
 
@@ -181,14 +190,14 @@ impl RoutingTable {
         self.buckets.lock().await.clone()
     }
 
-    pub fn bucket_index(&self, node_id: u128) -> u8 {
+    pub fn bucket_index(&self, node_id: U256) -> u8 {
         let xor_distance = self.local_node.id ^ node_id;
 
-        if xor_distance == 0 {
+        if xor_distance == U256::from(0) {
             return 0;
         }
 
-        (127 - xor_distance.leading_zeros()) as u8
+        (255 - xor_distance.leading_zeros()) as u8
     }
 
     pub async fn flat_nodes(&self) -> Vec<Node> {
@@ -323,7 +332,7 @@ impl RoutingTable {
         }
     }
 
-    pub async fn find_closest_nodes(&self, target_id: u128, count: usize) -> Vec<Node> {
+    pub async fn find_closest_nodes(&self, target_id: U256, count: usize) -> Vec<Node> {
         // Always include self
         let mut candidates = vec![self.local_node.clone()];
 
@@ -410,29 +419,29 @@ impl RoutingTable {
         last
     }
 
-    pub fn random_id_for_bucket(self_id: u128, bucket_index: u8) -> u128 {
+    pub fn random_id_for_bucket(self_id: U256, bucket_index: u8) -> U256 {
         // The bit we want to differ at (counting from the left,
-        // where 0 = top bit, 127 = bottom bit):
-        let bit_pos = 127 - bucket_index;
+        // where 0 = top bit, 255 = bottom bit):
+        let bit_pos = 255 - bucket_index;
 
         // 1. Flip that bit from self_id.
         //    We'll construct a mask that has only that bit set:
-        let flip_mask = 1u128 << bit_pos;
+        let flip_mask = U256::from(1) << bit_pos;
         let mut candidate = self_id ^ flip_mask;
 
         // 2. Now randomize all the bits below `bit_pos`.
         //    That means the `bit_pos` least significant bits can be anything.
-        //    We can generate a random 128-bit number, but then zero out
+        //    We can generate a random 256-bit number, but then zero out
         //    all bits except the lower `bit_pos`.
         //
         //    If bit_pos is 0, that means we only flipped the top bit
         //    and there's no "lower bits" to randomize, so handle that case:
         if bit_pos > 0 {
             // e.g. for bit_pos=5, we want to keep only bits [0..4].
-            let mask_below = (1u128 << bit_pos) - 1;  // e.g. (1 << 5) - 1 = 0b11111
+            let mask_below = (U256::from(1) << bit_pos) - 1;  // e.g. (1 << 5) - 1 = 0b11111
 
-            // A random u128 from the standard RNG:
-            let random_lower: u128 = rand::random::<u128>();
+            // A random U256 from the standard RNG:
+            let random_lower: U256 = u256_random();
 
             // Keep only the lower bit_pos bits:
             let random_bits = random_lower & mask_below;
@@ -451,7 +460,7 @@ impl RoutingTable {
 /// A simple channel message that carries identifying information.
 #[derive(Debug, Clone)]
 pub struct MessageChannel {
-    pub node_id: u128,
+    pub node_id: U256,
     pub msg: GarlemliaMessage,
 }
 
@@ -688,45 +697,43 @@ impl GMessage for GarlemliaMessageHandler {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChunkInfo {
     index: usize,
-    enc_chunk_id: u128,
-    chunk_id: u128,
+    enc_chunk_id: U256,
+    chunk_id: U256,
     size: usize
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaData {
-    Value { id: u128, value: String },
+    Value { id: U256, value: String },
     ValueResponse { value: String },
-    Validator { id: u128, proxy_ids: Vec<u128>, proxies: HashMap<u128, SocketAddr> },
+    Validator { id: U256, proxy_ids: Vec<U256>, proxies: HashMap<U256, SocketAddr> },
     ValidatorResponse { proxy: SocketAddr },
-    FileName { id: u128, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location_seed: u128, metadata_seed_rotation: f64, key_location_seed: u128, key_seed_rotation: f64 },
+    FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location_seed: U256, metadata_seed_rotation: f64, key_location_seed: U256, key_seed_rotation: f64 },
     FileNameResponse { name: String, file_type: String, size: usize, categories: Vec<String> },
-    MetaData { id: u128, file_id: u128, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location_seed: u64, metadata_seed_rotation: f64 },
-    MetaDataResponse { file_id: u128, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
-    FileKey { id: u128, enc_file_id: u128, decryption_key: String, key_location_seed: u64, key_seed_rotation: f64 },
-    FileKeyResponse { enc_file_id: u128, decryption_key: String },
-    ChunkKey { id: u128, decryption_key: String },
-    ChunkKeyResponse { decryption_key: String },
-    FileChunk { id: u128, chunk_file: String },
+    MetaData { id: U256, file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location_seed: u64, metadata_seed_rotation: f64 },
+    MetaDataResponse { file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
+    FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location_seed: u64, key_seed_rotation: f64 },
+    FileKeyResponse { enc_file_id: U256, decryption_key: String },
+    FileChunk { id: U256, chunk_file: String },
     FileChunkResponse { chunk_size: usize, data: Vec<u8> }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaMessage {
-    FindNode { id: u128, sender: Node },
-    Store { key: u128, value: GarlemliaData, sender: Node },
-    FindValue { key: u128, sender: Node },
+    FindNode { id: U256, sender: Node },
+    Store { key: U256, value: GarlemliaData, sender: Node },
+    FindValue { key: U256, sender: Node },
     Response { nodes: Vec<Node>, value: Option<GarlemliaData>, sender: Node },
     Garlic { msg: GarlicMessage, sender: Node },
     Ping { sender: Node },
     Pong { sender: Node },
-    SearchFile { search_id: u128, proxy_id: u128, search_term: String, sender: Node },
-    AgreeAlt { alt_sequence_number: u128, sender: Node },
+    SearchFile { search_id: U256, proxy_id: U256, search_term: String, sender: Node },
+    AgreeAlt { alt_sequence_number: U256, sender: Node },
     Stop { }
 }
 
 impl GarlemliaMessage {
-    pub fn sender_id(&self) -> u128 {
+    pub fn sender_id(&self) -> U256 {
         match self {
             GarlemliaMessage::FindNode { sender, .. } => sender.id.clone(),
             GarlemliaMessage::Store { sender, .. } => sender.id.clone(),
@@ -737,7 +744,7 @@ impl GarlemliaMessage {
             GarlemliaMessage::Pong { sender, .. } => sender.id.clone(),
             GarlemliaMessage::SearchFile { sender, ..} => sender.id.clone(),
             GarlemliaMessage::AgreeAlt { sender, .. } => sender.id.clone(),
-            GarlemliaMessage::Stop {} => 0,
+            GarlemliaMessage::Stop {} => U256::from(0)
         }
     }
 
@@ -752,7 +759,7 @@ impl GarlemliaMessage {
             GarlemliaMessage::Pong { sender, .. } => Some(sender.clone()),
             GarlemliaMessage::SearchFile { sender, ..} => Some(sender.clone()),
             GarlemliaMessage::AgreeAlt { sender, .. } => Some(sender.clone()),
-            GarlemliaMessage::Stop {} => None,
+            GarlemliaMessage::Stop {} => None
         }
     }
 }
@@ -761,7 +768,7 @@ impl GarlemliaMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Clove {
-    pub sequence_number: u128,
+    pub sequence_number: U256,
     pub msg_fragment: Vec<u8>,
     pub key_fragment: Vec<u8>,
     pub sent: DateTime<Utc>,
@@ -770,7 +777,7 @@ pub struct Clove {
 }
 
 impl Clove {
-    pub fn update_sequence(&mut self, new_sequence_number: u128) -> Clove {
+    pub fn update_sequence(&mut self, new_sequence_number: U256) -> Clove {
         self.sequence_number = new_sequence_number;
         self.clone()
     }
@@ -787,7 +794,7 @@ pub struct CloveNode {
     // The sequence number used when sending to this node
     // Most of the time it will be the chain sequence number, but if it is an alt node
     // then it will be the randomly generated sequence number
-    pub sequence_number: u128,
+    pub sequence_number: U256,
     pub node: Node
 }
 
@@ -802,35 +809,35 @@ pub enum CloveMessage {
         starting_hops: u16
     },
     SearchOverlay {
-        request_id: u128,
-        proxy_id: u128,
+        request_id: U256,
+        proxy_id: U256,
         search_term: String,
         public_key: String
     },
     SearchGarlemlia {
-        request_id: u128,
-        key: u128,
+        request_id: U256,
+        key: U256,
         public_key: String
     },
     ResponseDirect {
-        request_id: u128,
+        request_id: U256,
         address: SocketAddr,
         data: Vec<u8>,
         public_key: String
     },
     ResponseWithValidator {
-        request_id: u128,
-        proxy_id: u128,
+        request_id: U256,
+        proxy_id: U256,
         data: Vec<u8>,
         public_key: String
     }
 }
 
 impl CloveMessage {
-    pub fn request_id(&self) -> u128 {
+    pub fn request_id(&self) -> U256 {
         match self {
-            CloveMessage::RequestProxy { .. } => {0}
-            CloveMessage::ProxyInfo { .. } => {0}
+            CloveMessage::RequestProxy { .. } => {U256::from(0)}
+            CloveMessage::ProxyInfo { .. } => {U256::from(0)}
             CloveMessage::SearchOverlay { request_id, .. } => {request_id.clone()}
             CloveMessage::SearchGarlemlia { request_id, .. } => {request_id.clone()}
             CloveMessage::ResponseDirect { request_id, .. } => {request_id.clone()}
@@ -853,46 +860,46 @@ impl CloveMessage {
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub enum GarlicMessage {
     FindProxy {
-        sequence_number: u128,
+        sequence_number: U256,
         clove: Clove
     },
     Forward {
-        sequence_number: u128,
+        sequence_number: U256,
         clove: Clove
     },
     ProxyAgree {
-        sequence_number: u128,
-        updated_sequence_number: u128,
+        sequence_number: U256,
+        updated_sequence_number: U256,
         hops: u16,
         clove: Clove
     },
     RequestAlt {
-        alt_sequence_number: u128,
+        alt_sequence_number: U256,
         next_hop: Node,
         last_hop: Node
     },
     RefreshAlt {
-        sequence_number: u128
+        sequence_number: U256
     },
     UpdateAlt {
-        sequence_number: u128,
+        sequence_number: U256,
         alt_node: CloveNode
     }
 }
 
 impl GarlicMessage {
-    pub fn sequence_number(&self) -> u128 {
+    pub fn sequence_number(&self) -> U256 {
         match self {
             GarlicMessage::FindProxy { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::Forward { sequence_number, .. } => {sequence_number.clone()}
             GarlicMessage::ProxyAgree { sequence_number, .. } => {sequence_number.clone()}
-            GarlicMessage::RequestAlt { .. } => {0}
-            GarlicMessage::RefreshAlt { .. } => {0}
-            GarlicMessage::UpdateAlt { .. } => {0}
+            GarlicMessage::RequestAlt { .. } => {U256::from(0)}
+            GarlicMessage::RefreshAlt { .. } => {U256::from(0)}
+            GarlicMessage::UpdateAlt { .. } => {U256::from(0)}
         }
     }
 
-    pub fn update_sequence_number(&mut self, new_sequence_number: u128) {
+    pub fn update_sequence_number(&mut self, new_sequence_number: U256) {
         match self {
             GarlicMessage::Forward { clove, .. } => {
                 *self = GarlicMessage::Forward {

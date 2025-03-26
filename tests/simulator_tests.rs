@@ -1,14 +1,15 @@
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use primitive_types::U256;
 use rand::seq::IndexedRandom;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use garlemlia::garlemlia::garlemlia::Garlemlia;
 use garlemlia::simulator::simulator::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, SIM, add_running, remove_running, init_socket_once, GarlemliaInfo};
-use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, RoutingTable, Node, GarlemliaData};
+use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, RoutingTable, Node, GarlemliaData, u256_random};
 
-async fn create_test_node(id: u128, port: u16) -> Garlemlia {
+async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
 
     let private_key = RsaPrivateKey::from_pkcs8_pem("-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDCbUYL5OkM3n8A\nGwpfnpnfT66Fr9QaJg3F6marITjq46f5UX8TvxHkhVXDVfL1tEQzEYnp6+m6+y/l\nPgEvAJjfL/CeX2pIAmoUco1XQjA2Gi4+fbTCaodOLVqQruGZZdcE/UvHGdZHJwOr\nVnmSk7BAX+w4Uj5m7ycAMw+wSaU7wNZV5cQnGOAlMQE4NcJ7uMQYTVIGcI/pehPz\nYeZI2tmu4tgxBzUrMTZENAfIpCnT+d6R6WaMwk2fne/dJ1lYRK76ot9y10RgUuCj\nNn97HXfdqOlk9/uSyDRIfgyF5InqcsoAXXlg6qCwP9SrATuSImMJng5KHrUvbeCr\nUWhFRQYzAgMBAAECggEAZMcjUbL7obIKflGF1P5un7O7sIvtEwi6huXzBa0YxZfv\nT2oQxnl5mswKIlAAuZ8Q4q+qntertUHSF69GCcjzdGxy+oRWoLCvr52Y6avjNYfo\nhHfAJC33qGwVz3z2bv68r1dj2fXofcUZP8x5A6MN7rBJzv/CXLSFsLLG5QenYAqz\nRRLJlC4w7A9qqkassYPdzuFw5GkgEowrOV50DFh/Erw1o8cOHiq5R+MqKYPC1Y69\n2YXaN2qvLbFLtgkRsX9VbWS/WpkKQC8JwI7o67o0d2XFpBm+Pths+UGbALVRfxYd\nn6oi0+o4gbdVYhFcgGO5jvqQNJp+WZwvNftP48TmQQKBgQDgdnam3TlUk6nb8S7b\nnM3rFfxVWlvHNrlihr+oAQ119f36UWbMoIXx75+NUYKMHFbXKRrftj98mfOF0sYz\nYoZ6tcFsE2U7gLZEgoBBd19Y8E7KeObI9NkSe+MMEtL/1e+ivaNO7GSt2nXeiMpP\nu1YFUPDxnKX5Yh/aWeZV4z2kEQKBgQDdvniLbaf7JT9KlVEIyBgN2KXI00DlfQyF\ny0YoMZyuSjHWUo+1kOrn1ALtMHGSMToSNtCUF4Khkn77GYVmFmlfDae0KGJO2/Rg\nFV9mjcedYqBdN1eNQZjkBWC3RZ+nItlM3gRglCqy4nNg/9/n1O163ZZA9mZ9OMPW\nV5vkMZx6AwKBgDXKDar1Dp0G+ch8Jod4Lxxr21k02xOFOK20rs762ZfwCBnpUeIt\ngYu1qZ167/bVf7X14rvDd7lLR0FFfjuoG6PiVGSqzTKSKJuITmXhzlaI18jLajqz\n+iTkzUcCZ8/pG5D7Mtxh58qFtINMcnbi5L1HZUXxDRETA6EWtAzW9NmRAoGBANEZ\nk8KnHQiPDyfdthR523TzHyJJU6EUUoK4NOgiIIWaIXThVfL5PQpvunLAg9g/42rZ\nlcaQhPanlmZiopCqAaNI1SPmEQ4cDE2u2c9zUxDuuBou3biuauZay+EHHo4VJqR9\nl9Ma5UjakcKehx2uhGKgIdgQgoUCymmNI8wDnHLRAoGBAJcu7YA1i6CozXsvoDuw\nRDNCp9yHz8X6qq5OYVI4PRlYH7DiYibDiT8cQ9X2MKwHO6EQTvUJKBo3zhpjkUK0\nXQM8Xau0uiAe+IJaOS4PvsICFGOoXc8VQn99zYabXcIu31LmC/J8pFu1iY47Z20D\nkFOQz9OqdaJ3oPZ6Nq9yY92B\n-----END PRIVATE KEY-----\n").unwrap();
@@ -35,7 +36,7 @@ async fn simulated_node_find_test() {
                 SIM.lock().await.set_nodes(nodes.clone());
             }
 
-            let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
+            let mut node1 = create_test_node(u256_random(), 6000).await;
 
             {
                 println!("NODE:\nID: {}", node1.node.lock().await.id);
@@ -43,51 +44,28 @@ async fn simulated_node_find_test() {
 
             let test_node_sock = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
 
-            let selected_port = 9000 + (nodes.len() / 2) as u16;
-
-            let node_random = nodes.choose(&mut rand::rng()).unwrap().clone();
-            let mut temp_node_selected = None;
-            {
-                let temp_node = SIM.lock().await.get_node(SocketAddr::new("127.0.0.1".parse().unwrap(), selected_port)).await;
-                match temp_node {
-                    Some(node_unlocked) => {
-                        temp_node_selected = Some(node_unlocked.lock().await.clone());
-                    }
-                    None => {}
-                }
-            }
-
-            assert!(temp_node_selected.is_some(), "Could not retrieve Node with selected port");
-
-            let node_selected = temp_node_selected.unwrap();
-
-            println!("SEARCHING FOR:");
-            println!("ID: {}, Address: {}", node_selected.node.id, node_selected.node.address);
-            println!("ID: {}, Address: {}", node_random.node.id, node_random.node.address);
-
             println!("BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock.clone().port());
 
             node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock).await;
 
             println!("Joined Network");
 
-            // Perform lookup
-            let found_nodes_selected = node1.iterative_find_node(Arc::clone(&node1.socket), node_selected.node.id).await;
-            let found_nodes_random = node1.iterative_find_node(Arc::clone(&node1.socket), node_random.node.id).await;
+            for node_selected in nodes {
+                // Perform lookup
+                let found_nodes_selected = node1.iterative_find_node(Arc::clone(&node1.socket), node_selected.node.id).await;
 
-            println!("Send Find Node");
+                assert_eq!(found_nodes_selected[0], node_selected.node, "Should find selected, and it should be first in the list");
 
-            println!("SEARCH FOR SELECTED NODE WITH PORT {} :: found_nodes: {:?}", selected_port, found_nodes_selected);
-            println!("SEARCH FOR RANDOM NODE WITH PORT {} :: found_nodes: {:?}", node_random.node.address.port(), found_nodes_random);
+                if found_nodes_selected[0].id != node_selected.node.id {
+                    break;
+                }
+            }
+
             {
                 println!("ROUTING TABLE:\n{}", node1.routing_table.lock().await.to_string().await);
             }
 
             remove_running(node1.node.lock().await.clone()).await;
-
-            assert_eq!(found_nodes_selected[0], node_selected.node, "Should find selected, and it should be first in the list");
-            assert_eq!(found_nodes_random[0], node_random.node, "Should find random node, and it should be first in the list");
-
         }
         Err(e) => {
             eprintln!("Error loading nodes: {}", e);
@@ -109,8 +87,8 @@ async fn simulated_node_store_test() {
                 SIM.lock().await.set_nodes(nodes.clone());
             }
 
-            let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
-            let mut node2 = create_test_node(rand::random::<u128>(), 6001).await;
+            let mut node1 = create_test_node(u256_random(), 6000).await;
+            let mut node2 = create_test_node(u256_random(), 6001).await;
 
             {
                 println!("NODE1:\nID: {}", node1.node.lock().await.id);
@@ -128,7 +106,7 @@ async fn simulated_node_store_test() {
             node2.join_network(get_global_socket().unwrap().clone(), &test_node_sock2).await;
             println!("Node2 Joined Network");
 
-            let key = rand::random::<u128>();
+            let key = u256_random();
             let value = "PLEASE DEAR GOD LET THIS WORK".to_string();
             println!("STORE:\nKey: {}, Value: {}", key, value);
 
@@ -147,10 +125,11 @@ async fn simulated_node_store_test() {
             remove_running(node2.node.lock().await.clone()).await;
 
             match found_value {
-                Some(found_value) => {
-                    match found_value {
+                Some(found_value_yeet) => {
+                    match found_value_yeet {
                         GarlemliaData::Value { id: _, value: found_value } => {
                             assert_eq!(found_value, value, "Should find value and it should be the correct one.");
+                            println!("Found value: {}", found_value);
                         }
                         _ => {
                             assert!(false, "Value should be value type");
@@ -196,7 +175,7 @@ async fn simulated_proxy_discovery() {
                 SIM.lock().await.set_nodes(nodes.clone());
             }
 
-            let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
+            let mut node1 = create_test_node(u256_random(), 6000).await;
 
             {
                 println!("NODE1:\nID: {}", node1.node.lock().await.id);

@@ -3,6 +3,7 @@ use std::net::{SocketAddr};
 use std::path::Path;
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
+use primitive_types::U256;
 use rand_core::OsRng;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use tokio::net::UdpSocket;
@@ -24,7 +25,7 @@ pub struct Garlemlia {
     pub receive_addr: SocketAddr,
     pub message_handler: Arc<Box<dyn GMessage>>,
     pub routing_table: Arc<Mutex<RoutingTable>>,
-    pub data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
+    pub data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
     pub file_storage: Arc<Mutex<FileStorage>>,
     pub garlic: Arc<Mutex<GarlicCast>>,
     stop_signal: Arc<AtomicBool>,
@@ -35,7 +36,7 @@ pub struct Garlemlia {
 // TODO: which have not been seen in an hour + evicting those which fail
 // TODO: Add RPC ID's to messages?
 impl Garlemlia {
-    pub async fn new(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, file_storage_path: Box<&Path>) -> Self {
+    pub async fn new(id: U256, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, file_storage_path: Box<&Path>) -> Self {
         let mut dir_id = file_storage_path.join(id.to_string());
         dir_id.push("downloads");
         fs::create_dir_all(dir_id.clone()).await.unwrap();
@@ -73,7 +74,7 @@ impl Garlemlia {
         }
     }
 
-    pub async fn new_with_details(id: u128, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, socket: Arc<UdpSocket>, public_key: RsaPublicKey, private_key: RsaPrivateKey, file_storage_path: Box<&Path>) -> Self {
+    pub async fn new_with_details(id: U256, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, socket: Arc<UdpSocket>, public_key: RsaPublicKey, private_key: RsaPrivateKey, file_storage_path: Box<&Path>) -> Self {
         let mut dir_id = file_storage_path.join(id.to_string());
         dir_id.push("downloads");
         fs::create_dir_all(dir_id.clone()).await.unwrap();
@@ -115,7 +116,7 @@ impl Garlemlia {
         self.routing_table.lock().await.update_from(rt).await;
     }
 
-    pub async fn set_data_store(&self, data_store: &mut HashMap<u128, GarlemliaData>) {
+    pub async fn set_data_store(&self, data_store: &mut HashMap<U256, GarlemliaData>) {
         let mut ds = self.data_store.lock().await;
         ds.clear();
 
@@ -324,7 +325,7 @@ impl Garlemlia {
         self.socket.send_to(&*serde_json::to_vec(&GarlemliaMessage::Stop {}).unwrap(), &self.receive_addr).await.unwrap();
     }
 
-    pub async fn iterative_find_node(&self, socket: Arc<UdpSocket>, target_id: u128) -> Vec<Node> {
+    pub async fn iterative_find_node(&self, socket: Arc<UdpSocket>, target_id: U256) -> Vec<Node> {
         let self_node = self.get_node().await;
         let mut queried_nodes = HashSet::new();
 
@@ -414,8 +415,8 @@ impl Garlemlia {
             new_candidate_set.truncate(DEFAULT_K);
 
             // Compare candidate sets using IDs (order-independent)
-            let old_ids: HashSet<u128> = top_k.iter().map(|n| n.id).collect();
-            let new_ids: HashSet<u128> = new_candidate_set.iter().map(|n| n.id).collect();
+            let old_ids: HashSet<U256> = top_k.iter().map(|n| n.id).collect();
+            let new_ids: HashSet<U256> = new_candidate_set.iter().map(|n| n.id).collect();
             if old_ids == new_ids {
                 break;
             }
@@ -446,7 +447,7 @@ impl Garlemlia {
 
 
     // Perform an iterative lookup for a value in the DHT
-    pub async fn iterative_find_value(&self, socket: Arc<UdpSocket>, key: u128) -> Option<GarlemliaData> {
+    pub async fn iterative_find_value(&self, socket: Arc<UdpSocket>, key: U256) -> Option<GarlemliaData> {
         let self_node = self.get_node().await;
         // Check if this node has the value first
         let local = self.data_store.lock().await.get(&key).cloned();
@@ -561,8 +562,8 @@ impl Garlemlia {
             new_candidate_set.truncate(DEFAULT_K);
 
             // Compare candidate sets using IDs (order-independent)
-            let old_ids: HashSet<u128> = top_k.iter().map(|n| n.id).collect();
-            let new_ids: HashSet<u128> = new_candidate_set.iter().map(|n| n.id).collect();
+            let old_ids: HashSet<U256> = top_k.iter().map(|n| n.id).collect();
+            let new_ids: HashSet<U256> = new_candidate_set.iter().map(|n| n.id).collect();
             if old_ids == new_ids {
                 break;
             }
@@ -585,7 +586,7 @@ impl Garlemlia {
         None
     }
 
-    pub async fn store_value(&mut self, socket: Arc<UdpSocket>, key: u128, value: GarlemliaData) -> Vec<Node> {
+    pub async fn store_value(&mut self, socket: Arc<UdpSocket>, key: U256, value: GarlemliaData) -> Vec<Node> {
         let self_node = self.get_node().await;
         // Find the closest nodes to store the value
         let mut closest_nodes = self.iterative_find_node(Arc::clone(&socket), key).await;
@@ -632,8 +633,8 @@ impl Garlemlia {
             self_id = self.node.lock().await.id;
         }
 
-        let total_buckets = 128;
-        for b in 0..total_buckets {
+        let total_buckets = 255;
+        for b in 0..=total_buckets {
             let refresh_id = RoutingTable::random_id_for_bucket(self_id, b);
             self.iterative_find_node(socket.clone(), refresh_id).await;
         }

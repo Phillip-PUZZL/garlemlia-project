@@ -1,3 +1,4 @@
+use primitive_types::U256;
 use crate::garlemlia_structs::garlemlia_structs::ChunkInfo;
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
@@ -5,14 +6,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
-    id: u128,
+    id: U256,
     name: String,
     file_type: String,
     size: usize,
     downloaded: usize,
     categories: Vec<String>,
-    file_id: Option<u128>,
-    enc_file_id: Option<u128>,
+    file_id: Option<U256>,
+    enc_file_id: Option<U256>,
     decryption_key: Option<String>,
     downloaded_chunks: Vec<ChunkInfo>,
     needed_chunks: Vec<ChunkInfo>
@@ -70,17 +71,17 @@ impl FileStorage {
 }
 
 pub struct FileUpload {
-    id: u128,
+    id: U256,
     name: String,
     file_type: String,
     size: usize,
     categories: Vec<String>,
-    file_id: u128,
-    enc_file_id: u128,
+    file_id: U256,
+    enc_file_id: U256,
     decryption_key: String,
-    metadata_location_seed: u128,
+    metadata_location_seed: U256,
     metadata_seed_rotation: f64,
-    key_location_seed: u128,
+    key_location_seed: U256,
     key_seed_rotation: f64,
     chunks: Vec<String>
 }

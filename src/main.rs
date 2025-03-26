@@ -1,5 +1,5 @@
 use garlemlia::garlemlia::garlemlia::Garlemlia;
-use garlemlia::garlemlia_structs::garlemlia_structs::{Node, RoutingTable};
+use garlemlia::garlemlia_structs::garlemlia_structs::{u256_random, Node, RoutingTable};
 use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, save_simulated_nodes, simulated_to_gmessage, GarlemliaInfo, SIM};
 use regex::{Match, Regex};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
@@ -8,9 +8,10 @@ use std::io::{stdin, stdout, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use primitive_types::U256;
 use tokio::{fs, time};
 
-async fn create_test_node(id: u128, port: u16) -> Garlemlia {
+async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
 
     let private_key = RsaPrivateKey::from_pkcs8_pem("-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDCbUYL5OkM3n8A\nGwpfnpnfT66Fr9QaJg3F6marITjq46f5UX8TvxHkhVXDVfL1tEQzEYnp6+m6+y/l\nPgEvAJjfL/CeX2pIAmoUco1XQjA2Gi4+fbTCaodOLVqQruGZZdcE/UvHGdZHJwOr\nVnmSk7BAX+w4Uj5m7ycAMw+wSaU7wNZV5cQnGOAlMQE4NcJ7uMQYTVIGcI/pehPz\nYeZI2tmu4tgxBzUrMTZENAfIpCnT+d6R6WaMwk2fne/dJ1lYRK76ot9y10RgUuCj\nNn97HXfdqOlk9/uSyDRIfgyF5InqcsoAXXlg6qCwP9SrATuSImMJng5KHrUvbeCr\nUWhFRQYzAgMBAAECggEAZMcjUbL7obIKflGF1P5un7O7sIvtEwi6huXzBa0YxZfv\nT2oQxnl5mswKIlAAuZ8Q4q+qntertUHSF69GCcjzdGxy+oRWoLCvr52Y6avjNYfo\nhHfAJC33qGwVz3z2bv68r1dj2fXofcUZP8x5A6MN7rBJzv/CXLSFsLLG5QenYAqz\nRRLJlC4w7A9qqkassYPdzuFw5GkgEowrOV50DFh/Erw1o8cOHiq5R+MqKYPC1Y69\n2YXaN2qvLbFLtgkRsX9VbWS/WpkKQC8JwI7o67o0d2XFpBm+Pths+UGbALVRfxYd\nn6oi0+o4gbdVYhFcgGO5jvqQNJp+WZwvNftP48TmQQKBgQDgdnam3TlUk6nb8S7b\nnM3rFfxVWlvHNrlihr+oAQ119f36UWbMoIXx75+NUYKMHFbXKRrftj98mfOF0sYz\nYoZ6tcFsE2U7gLZEgoBBd19Y8E7KeObI9NkSe+MMEtL/1e+ivaNO7GSt2nXeiMpP\nu1YFUPDxnKX5Yh/aWeZV4z2kEQKBgQDdvniLbaf7JT9KlVEIyBgN2KXI00DlfQyF\ny0YoMZyuSjHWUo+1kOrn1ALtMHGSMToSNtCUF4Khkn77GYVmFmlfDae0KGJO2/Rg\nFV9mjcedYqBdN1eNQZjkBWC3RZ+nItlM3gRglCqy4nNg/9/n1O163ZZA9mZ9OMPW\nV5vkMZx6AwKBgDXKDar1Dp0G+ch8Jod4Lxxr21k02xOFOK20rs762ZfwCBnpUeIt\ngYu1qZ167/bVf7X14rvDd7lLR0FFfjuoG6PiVGSqzTKSKJuITmXhzlaI18jLajqz\n+iTkzUcCZ8/pG5D7Mtxh58qFtINMcnbi5L1HZUXxDRETA6EWtAzW9NmRAoGBANEZ\nk8KnHQiPDyfdthR523TzHyJJU6EUUoK4NOgiIIWaIXThVfL5PQpvunLAg9g/42rZ\nlcaQhPanlmZiopCqAaNI1SPmEQ4cDE2u2c9zUxDuuBou3biuauZay+EHHo4VJqR9\nl9Ma5UjakcKehx2uhGKgIdgQgoUCymmNI8wDnHLRAoGBAJcu7YA1i6CozXsvoDuw\nRDNCp9yHz8X6qq5OYVI4PRlYH7DiYibDiT8cQ9X2MKwHO6EQTvUJKBo3zhpjkUK0\nXQM8Xau0uiAe+IJaOS4PvsICFGOoXc8VQn99zYabXcIu31LmC/J8pFu1iY47Z20D\nkFOQz9OqdaJ3oPZ6Nq9yY92B\n-----END PRIVATE KEY-----\n").unwrap();
@@ -35,7 +36,7 @@ async fn check_node_discover() {
                 SIM.lock().await.set_nodes(nodes.clone());
             }
 
-            let mut node1 = create_test_node(rand::random::<u128>(), 6000).await;
+            let mut node1 = create_test_node(u256_random(), 6000).await;
 
             {
                 println!("NODE1:\nID: {}", node1.node.lock().await.id);
@@ -266,7 +267,7 @@ async fn garlemlia_console() {
             } else if s.starts_with("SEARCH KADEMLIA ") {
                 let re = Regex::new(r"\d+").unwrap();
                 let result: Option<Match> = re.find(&*s);
-                let value: u128 = result.map(|m| m.as_str().parse::<u128>().unwrap()).unwrap_or(0);
+                let value: U256 = result.map(|m| m.as_str().parse::<U256>().unwrap()).unwrap_or(U256::from(0));
 
                 {
                     running_nodes[selected].garlic.lock().await.send_search_kademlia(search_proxy_ids.clone(), value).await;
@@ -292,7 +293,7 @@ async fn garlemlia_console() {
             let result: Option<Match> = re.find(&*s);
             let port: u16 = result.map(|m| m.as_str().parse::<u16>().unwrap()).unwrap_or(0);
 
-            running_nodes.push(create_test_node(rand::random::<u128>(), port).await);
+            running_nodes.push(create_test_node(u256_random(), port).await);
         }  else if s.starts_with("INIT TEST") {
             match load_simulated_nodes("./test_nodes.json").await {
                 Ok(nodes) => {
@@ -308,7 +309,7 @@ async fn garlemlia_console() {
                 },
             }
 
-            running_nodes.push(create_test_node(rand::random::<u128>(), 6000).await);
+            running_nodes.push(create_test_node(u256_random(), 6000).await);
             selected = 0;
             {
                 println!("Started and selected NODE :: {}", running_nodes[selected].node.lock().await.id);

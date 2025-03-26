@@ -18,20 +18,22 @@ use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use primitive_types::U256;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use crate::garlemlia_structs::garlemlia_structs::u256_random;
 
 pub const FORWARD_P: f64 = 0.95;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CloveCache {
-    cloves: HashMap<u128, CloveData>,
+    cloves: HashMap<U256, CloveData>,
     next_hop: HashMap<CloveNode, Option<CloveNode>>,
     alt_nodes: HashMap<CloveNode, CloveNode>,
-    alt_to_sequence: HashMap<CloveNode, u128>,
-    associations: HashMap<u128, Vec<CloveNode>>,
-    seen_last: HashMap<u128, DateTime<Utc>>,
-    my_alt_nodes: HashMap<u128, CloveNode>
+    alt_to_sequence: HashMap<CloveNode, U256>,
+    associations: HashMap<U256, Vec<CloveNode>>,
+    seen_last: HashMap<U256, DateTime<Utc>>,
+    my_alt_nodes: HashMap<U256, CloveNode>
 }
 
 impl CloveCache {
@@ -47,7 +49,7 @@ impl CloveCache {
         }
     }
 
-    pub fn remove_sequence(&mut self, sequence_number: u128) {
+    pub fn remove_sequence(&mut self, sequence_number: U256) {
         let associated = self.associations.remove(&sequence_number);
 
         match associated {
@@ -73,11 +75,11 @@ impl CloveCache {
         self.cloves.insert(clove.sequence_number, CloveData { clove, from });
     }
 
-    pub fn remove_clove(&mut self, sequence_number: u128) {
+    pub fn remove_clove(&mut self, sequence_number: U256) {
         self.cloves.remove(&sequence_number);
     }
 
-    pub fn insert_association(&mut self, sequence_number: u128, node: CloveNode) {
+    pub fn insert_association(&mut self, sequence_number: U256, node: CloveNode) {
         if self.associations.contains_key(&sequence_number) {
             self.associations.get_mut(&sequence_number).unwrap().push(node);
             self.associations.get_mut(&sequence_number).unwrap().dedup();
@@ -86,7 +88,7 @@ impl CloveCache {
         }
     }
 
-    pub fn insert_updated_association(&mut self, sequence_number: u128, new_sequence_number: u128) {
+    pub fn insert_updated_association(&mut self, sequence_number: U256, new_sequence_number: U256) {
         if self.associations.contains_key(&sequence_number) {
             let associations = self.associations.get(&sequence_number).unwrap().clone();
 
@@ -100,7 +102,7 @@ impl CloveCache {
         }
     }
 
-    pub fn remove_association(&mut self, sequence_number: u128) {
+    pub fn remove_association(&mut self, sequence_number: U256) {
         self.associations.remove(&sequence_number);
     }
 
@@ -143,17 +145,17 @@ impl CloveCache {
         self.alt_to_sequence.remove(&node);
     }
 
-    pub fn get_sequence_from_alt(&self, node: CloveNode) -> Option<u128> {
+    pub fn get_sequence_from_alt(&self, node: CloveNode) -> Option<U256> {
         self.alt_to_sequence.get(&node).cloned()
     }
 
-    pub fn insert_my_alt_node(&mut self, sequence_number: u128, my_alt_node: CloveNode) {
+    pub fn insert_my_alt_node(&mut self, sequence_number: U256, my_alt_node: CloveNode) {
         self.my_alt_nodes.insert(sequence_number, my_alt_node.clone());
 
         self.insert_association(sequence_number, my_alt_node);
     }
 
-    pub fn remove_my_alt_node(&mut self, sequence_number: u128) {
+    pub fn remove_my_alt_node(&mut self, sequence_number: U256) {
         self.my_alt_nodes.remove(&sequence_number);
     }
     
@@ -170,7 +172,7 @@ impl CloveCache {
         }
     }
 
-    pub fn update_sequence_number(&mut self, new_sequence_number: u128, clove_node: CloveNode) {
+    pub fn update_sequence_number(&mut self, new_sequence_number: U256, clove_node: CloveNode) {
         let node = clove_node.node.clone();
         let new_clove_node = CloveNode { sequence_number: new_sequence_number, node };
 
@@ -236,7 +238,7 @@ impl CloveCache {
         }
     }
 
-    pub fn replace_with_alt_node(&mut self, sequence_number: u128, node: Node) -> Option<CloveNode> {
+    pub fn replace_with_alt_node(&mut self, sequence_number: U256, node: Node) -> Option<CloveNode> {
         let old_clove_node = CloveNode { sequence_number, node };
         let new_clove_node = self.alt_nodes.remove(&old_clove_node);
 
@@ -260,14 +262,14 @@ impl CloveCache {
         }
     }
 
-    pub fn seen(&mut self, sequence_number: u128) {
+    pub fn seen(&mut self, sequence_number: U256) {
         self.seen_last.insert(sequence_number, Utc::now());
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SerializableProxy {
-    sequence_number: u128,
+    sequence_number: U256,
     neighbor_1: CloveNode,
     neighbor_2: CloveNode,
     neighbor_1_hops: u16,
@@ -302,7 +304,7 @@ impl SerializableProxy {
         }
     }
 
-    pub fn hashmap_to_serializable(proxies: HashMap<u128, Proxy>) -> HashMap<u128, SerializableProxy> {
+    pub fn hashmap_to_serializable(proxies: HashMap<U256, Proxy>) -> HashMap<U256, SerializableProxy> {
         let mut proxies_serial = HashMap::new();
 
         for item in proxies {
@@ -312,7 +314,7 @@ impl SerializableProxy {
         proxies_serial
     }
 
-    pub fn hashmap_to_proxy(proxies: HashMap<u128, SerializableProxy>) -> HashMap<u128, Proxy> {
+    pub fn hashmap_to_proxy(proxies: HashMap<U256, SerializableProxy>) -> HashMap<U256, Proxy> {
         let mut proxies_serial = HashMap::new();
 
         for item in proxies {
@@ -345,7 +347,7 @@ impl SerializableProxy {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proxy {
-    pub sequence_number: u128,
+    pub sequence_number: U256,
     pub neighbor_1: CloveNode,
     pub neighbor_2: CloveNode,
     pub neighbor_1_hops: u16,
@@ -356,10 +358,10 @@ pub struct Proxy {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SerializableProxyRequest {
-    request_id: u128,
+    request_id: U256,
     validator_required: bool,
     proxies: Vec<SerializableProxy>,
-    proxy_id_associations: HashMap<u128, SerializableProxy>,
+    proxy_id_associations: HashMap<U256, SerializableProxy>,
     responses: Vec<CloveMessage>
 }
 
@@ -384,7 +386,7 @@ impl SerializableProxyRequest {
         }
     }
 
-    pub fn hashmap_to_serializable(proxies: HashMap<u128, ProxyRequest>) -> HashMap<u128, SerializableProxyRequest> {
+    pub fn hashmap_to_serializable(proxies: HashMap<U256, ProxyRequest>) -> HashMap<U256, SerializableProxyRequest> {
         let mut proxies_serial = HashMap::new();
 
         for item in proxies {
@@ -394,7 +396,7 @@ impl SerializableProxyRequest {
         proxies_serial
     }
 
-    pub fn hashmap_to_proxy_request(proxies: HashMap<u128, SerializableProxyRequest>) -> HashMap<u128, ProxyRequest> {
+    pub fn hashmap_to_proxy_request(proxies: HashMap<U256, SerializableProxyRequest>) -> HashMap<U256, ProxyRequest> {
         let mut proxies_serial = HashMap::new();
 
         for item in proxies {
@@ -407,10 +409,10 @@ impl SerializableProxyRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyRequest {
-    request_id: u128,
+    request_id: U256,
     validator_required: bool,
     proxies: Vec<Proxy>,
-    proxy_id_associations: HashMap<u128, Proxy>,
+    proxy_id_associations: HashMap<U256, Proxy>,
     responses: Vec<CloveMessage>
 }
 
@@ -420,11 +422,11 @@ pub struct SerializableGarlicCast {
     pub known_nodes: Vec<Node>,
     proxies: Vec<SerializableProxy>,
     initiators: Vec<SerializableProxy>,
-    partial_proxies: HashMap<u128, Node>,
+    partial_proxies: HashMap<U256, Node>,
     cache: CloveCache,
-    collected_messages: HashMap<u128, Vec<GarlicMessage>>,
-    requests: HashMap<u128, SerializableProxyRequest>,
-    pub starting_hops: HashMap<u128, u8>,
+    collected_messages: HashMap<U256, Vec<GarlicMessage>>,
+    requests: HashMap<U256, SerializableProxyRequest>,
+    pub starting_hops: HashMap<U256, u8>,
     pub public_key: String,
     pub private_key: String
 }
@@ -473,11 +475,11 @@ pub struct GarlicCast {
     known_nodes: Arc<Mutex<Vec<Node>>>,
     proxies: Arc<Mutex<Vec<Proxy>>>,
     initiators: Arc<Mutex<Vec<Proxy>>>,
-    partial_proxies: Arc<Mutex<HashMap<u128, Node>>>,
+    partial_proxies: Arc<Mutex<HashMap<U256, Node>>>,
     cache: Arc<Mutex<CloveCache>>,
-    collected_messages: Arc<Mutex<HashMap<u128, Vec<GarlicMessage>>>>,
-    requests: Arc<Mutex<HashMap<u128, ProxyRequest>>>,
-    starting_hops: HashMap<u128, u8>,
+    collected_messages: Arc<Mutex<HashMap<U256, Vec<GarlicMessage>>>>,
+    requests: Arc<Mutex<HashMap<U256, ProxyRequest>>>,
+    starting_hops: HashMap<U256, u8>,
     public_key: Option<RsaPublicKey>,
     private_key: Option<RsaPrivateKey>
 }
@@ -536,7 +538,7 @@ impl GarlicCast {
         known_nodes.extend(nodes);
     }
 
-    async fn in_cache(&self, sequence_number: u128) -> bool {
+    async fn in_cache(&self, sequence_number: U256) -> bool {
         let cache = self.cache.lock().await;
         let cache_info = cache.cloves.get(&sequence_number);
 
@@ -557,7 +559,7 @@ impl GarlicCast {
             count_actual = 2;
         }
 
-        let sequence_number = rand::random::<u128>();
+        let sequence_number = u256_random();
 
         let msg = CloveMessage::RequestProxy {
             msg: "Will proxy?".to_string(),
@@ -719,7 +721,7 @@ impl GarlicCast {
         GarlicCast::clove_to_message(clove_1, clove_2, Some(self_priv_k))
     }
 
-    fn clove_generator(msg_serialized: Vec<u8>, count: u8, sequence_number: u128, recipient_pub_key: Option<RsaPublicKey>) -> Vec<Clove> {
+    fn clove_generator(msg_serialized: Vec<u8>, count: u8, sequence_number: U256, recipient_pub_key: Option<RsaPublicKey>) -> Vec<Clove> {
         let mut cloves = vec![];
 
         let mut count_actual = count;
@@ -817,14 +819,14 @@ impl GarlicCast {
         cloves
     }
 
-    pub fn generate_cloves_no_rsa(msg: CloveMessage, count: u8, sequence_number: u128) -> Vec<Clove> {
+    pub fn generate_cloves_no_rsa(msg: CloveMessage, count: u8, sequence_number: U256) -> Vec<Clove> {
         // Serialize message into bytes
         let msg_serialized = bincode::serialize(&msg).unwrap();
 
         GarlicCast::clove_generator(msg_serialized, count, sequence_number, None)
     }
 
-    pub fn generate_cloves_rsa(msg: CloveMessage, recipient_pub_k: RsaPublicKey, count: u8, sequence_number: u128) -> Vec<Clove> {
+    pub fn generate_cloves_rsa(msg: CloveMessage, recipient_pub_k: RsaPublicKey, count: u8, sequence_number: U256) -> Vec<Clove> {
         // Serialize message into bytes
         let msg_serialized = bincode::serialize(&msg).unwrap();
 
@@ -894,13 +896,13 @@ impl GarlicCast {
         }
     }
 
-    pub async fn send_search_overlay(&self, req: String, proxy_id_pool: Vec<u128>, count: u8) {
+    pub async fn send_search_overlay(&self, req: String, proxy_id_pool: Vec<U256>, count: u8) {
         let mut count_actual = count;
         if  count < 2 {
             count_actual = 2;
         }
 
-        let request_id = rand::random::<u128>();
+        let request_id = u256_random();
         let mut proxy_request = ProxyRequest {
             request_id,
             validator_required: true,
@@ -926,7 +928,7 @@ impl GarlicCast {
             let mut tasks = Vec::new();
 
             for _ in 0..count_actual - total_sent {
-                let proxy_id = rand::random::<u128>();
+                let proxy_id = u256_random();
                 let msg = CloveMessage::SearchOverlay {
                     request_id,
                     proxy_id,
@@ -1042,8 +1044,8 @@ impl GarlicCast {
         self.requests.lock().await.insert(request_id, proxy_request);
     }
     
-    pub async fn send_search_kademlia(&self, proxy_id_pool: Vec<u128>, key: u128) {
-        let request_id = rand::random::<u128>();
+    pub async fn send_search_kademlia(&self, proxy_id_pool: Vec<U256>, key: U256) {
+        let request_id = u256_random();
         let proxy_request = ProxyRequest {
             request_id,
             validator_required: false,
@@ -1074,7 +1076,7 @@ impl GarlicCast {
         while !sent {
             let mut temp_proxy = proxies.remove(rand::random_range(0..proxies.len()));
 
-            //let proxy_id = rand::random::<u128>();
+            //let proxy_id = rand::random::<U256>();
             let msg = CloveMessage::SearchGarlemlia {
                 request_id,
                 key,
@@ -1248,7 +1250,7 @@ impl GarlicCast {
         }
     }
 
-    async fn forward_find_proxy(&self, sequence_number: u128, node: Node, msg: Clove) {
+    async fn forward_find_proxy(&self, sequence_number: U256, node: Node, msg: Clove) {
         let mut keep_trying = true;
         while keep_trying {
             // Basically just try the fuck out of some nodes until one responds with an IsAlive message
@@ -1306,7 +1308,7 @@ impl GarlicCast {
         }
     }
 
-    async fn forward_proxy_accept(&self, proxy: Proxy, old_sequence: u128) {
+    async fn forward_proxy_accept(&self, proxy: Proxy, old_sequence: U256) {
         let hops_start = rand::random::<u16>() & 0b1111;
         
         let proxy_info = CloveMessage::ProxyInfo {
@@ -1385,7 +1387,7 @@ impl GarlicCast {
         }
     }
 
-    async fn accept_proxy(&self, cache: CloveCache, sequence_number: u128, second_clove: Clove, node: Node) -> Option<Proxy> {
+    async fn accept_proxy(&self, cache: CloveCache, sequence_number: U256, second_clove: Clove, node: Node) -> Option<Proxy> {
         let first_clove = cache.cloves.get(&sequence_number).unwrap().clone();
         let msg_from_initiator = GarlicCast::message_from_cloves_no_rsa(first_clove.clone().clove, second_clove.clone());
 
@@ -1397,7 +1399,7 @@ impl GarlicCast {
 
         match msg_from_initiator {
             CloveMessage::RequestProxy { public_key, .. } => {
-                let new_sequence = rand::random::<u128>();
+                let new_sequence = u256_random();
                 let proxy = Proxy {
                     sequence_number: new_sequence,
                     neighbor_1: CloveNode { sequence_number: new_sequence, node: first_clove.from.clone() },
@@ -1433,12 +1435,12 @@ impl GarlicCast {
         }
     }
 
-    pub async fn find_alt(&self, n_1: Option<Node>, n_2: Option<Node>, sequence_number: u128) -> CloveNode {
-        let alt_sequence_number = rand::random::<u128>();
+    pub async fn find_alt(&self, n_1: Option<Node>, n_2: Option<Node>, sequence_number: U256) -> CloveNode {
+        let alt_sequence_number = u256_random();
         let mut keep_trying = true;
         let mut alt = CloveNode {
             sequence_number: alt_sequence_number,
-            node: Node { id: 0, address: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0) },
+            node: Node { id: U256::from(0), address: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0) },
         };
 
         if n_1.is_none() && n_2.is_none() {
@@ -1519,7 +1521,7 @@ impl GarlicCast {
         alt
     }
 
-    pub async fn send_alt(&self, n_1: Option<Node>, n_2: Option<Node>, sequence_number: u128, alt: CloveNode) {
+    pub async fn send_alt(&self, n_1: Option<Node>, n_2: Option<Node>, sequence_number: U256, alt: CloveNode) {
         let new_msg = GarlicMessage::UpdateAlt {
             sequence_number,
             alt_node: alt.clone(),

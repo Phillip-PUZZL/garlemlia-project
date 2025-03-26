@@ -4,13 +4,10 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use primitive_types::U256;
 use tokio::time::sleep;
 
-pub mod hash_tests;
-pub mod gc_tests;
-pub mod file_tests;
-
-async fn create_test_node(id: u128, port: u16) -> Garlemlia {
+async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     let mut node = Garlemlia::new(id, "127.0.0.1", port, RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)}), GarlemliaMessageHandler::create(1), Box::new(Path::new("./running_nodes_files"))).await;
 
     // Spawn a task to keep the node running and listening
@@ -22,9 +19,9 @@ async fn create_test_node(id: u128, port: u16) -> Garlemlia {
 #[tokio::test]
 async fn test_iterative_find_node() {
     // Create multiple nodes and bind them to real sockets
-    let mut node1 = create_test_node(1, 8005).await;
-    let mut node2 = create_test_node(2, 8006).await;
-    let node3 = create_test_node(3, 8007).await;
+    let mut node1 = create_test_node(U256::from(1), 8005).await;
+    let mut node2 = create_test_node(U256::from(2), 8006).await;
+    let node3 = create_test_node(U256::from(3), 8007).await;
 
     let node3_addr = node3.node.lock().await.address;
     let node2_info = node2.node.lock().await.clone();
@@ -33,7 +30,7 @@ async fn test_iterative_find_node() {
     node2.join_network(Arc::clone(&node2.socket), &node3_addr).await;
 
     // Perform lookup
-    let found_nodes = node1.iterative_find_node(Arc::clone(&node1.socket), 2).await;
+    let found_nodes = node1.iterative_find_node(Arc::clone(&node1.socket), U256::from(2)).await;
 
     sleep(Duration::from_secs(2)).await; // Allow time for replication
 
@@ -48,9 +45,9 @@ async fn test_iterative_find_node() {
 
 #[tokio::test]
 async fn test_add_node_to_routing_table() {
-    let kad = create_test_node(1, 8080).await;
+    let kad = create_test_node(U256::from(1), 8080).await;
     let node = Node {
-        id: 42,
+        id: U256::from(42),
         address: "127.0.0.1:8001".parse().unwrap(),
     };
 
@@ -69,10 +66,10 @@ async fn test_add_node_to_routing_table() {
 
 #[tokio::test]
 async fn test_add_node_ping() {
-    let kad = create_test_node(1, 8081).await;
-    let test = create_test_node(128, 8082).await;
+    let kad = create_test_node(U256::from(1), 8081).await;
+    let test = create_test_node(U256::from(128), 8082).await;
 
-    let base_id: u128 = 128;
+    let base_id: U256 = U256::from(128);
     let bucket_index;
 
     {
@@ -83,10 +80,10 @@ async fn test_add_node_ping() {
     // Generate nodes that belong in the same bucket
     let mut nodes = Vec::new();
     for i in 1..DEFAULT_K {
-        let id = base_id + i as u128;
+        let id = base_id + i;
         nodes.push(Node {
             id,
-            address: format!("127.0.0.1:{}", 8000 + base_id + i as u128).parse().unwrap(),
+            address: format!("127.0.0.1:{}", U256::from(8000) + base_id + i).parse().unwrap(),
         });
     }
 
@@ -106,7 +103,7 @@ async fn test_add_node_ping() {
 
     // One extra node to force a ping
     let overflow_node = Node {
-        id: base_id + (DEFAULT_K as u128),
+        id: base_id + (DEFAULT_K),
         address: "127.0.0.1:9000".parse().unwrap(),
     };
     kad.add_node(&kad.socket, overflow_node.clone()).await;
@@ -148,10 +145,10 @@ async fn test_add_node_ping() {
 #[tokio::test]
 async fn test_iterative_find_value() {
     // Create multiple nodes and bind them to real sockets
-    let mut node1 = create_test_node(1, 8001).await;
-    let mut node2 = create_test_node(2, 8002).await;
-    let mut node3 = create_test_node(3, 8003).await;
-    let mut node4 = create_test_node(4, 8004).await;
+    let mut node1 = create_test_node(U256::from(1), 8001).await;
+    let mut node2 = create_test_node(U256::from(2), 8002).await;
+    let mut node3 = create_test_node(U256::from(3), 8003).await;
+    let mut node4 = create_test_node(U256::from(4), 8004).await;
 
     let node3_info = node3.node.lock().await.clone();
     let node1_info = node1.node.lock().await.clone();
@@ -164,11 +161,11 @@ async fn test_iterative_find_value() {
     sleep(Duration::from_secs(1)).await;
 
     // Store a value in node1
-    node1.store_value(Arc::clone(&node1.socket), 2, GarlemliaData::Value { id: 2, value: "Hello, world!".to_string() }).await;
+    node1.store_value(Arc::clone(&node1.socket), U256::from(2), GarlemliaData::Value { id: U256::from(2), value: "Hello, world!".to_string() }).await;
     sleep(Duration::from_secs(1)).await;
 
     // Attempt to retrieve the stored value from node4
-    let value = node4.iterative_find_value(Arc::clone(&node4.socket), 2).await;
+    let value = node4.iterative_find_value(Arc::clone(&node4.socket), U256::from(2)).await;
 
     node1.stop().await;
     node2.stop().await;

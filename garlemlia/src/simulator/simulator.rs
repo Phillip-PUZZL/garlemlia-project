@@ -1,6 +1,6 @@
 use crate::garlemlia::garlemlia;
 use crate::garlemlia_structs::garlemlia_structs;
-use crate::garlemlia_structs::garlemlia_structs::{GarlemliaData, SerializableRoutingTable};
+use crate::garlemlia_structs::garlemlia_structs::{u256_random, GarlemliaData, SerializableRoutingTable};
 use crate::garlic_cast::garlic_cast;
 use crate::garlic_cast::garlic_cast::SerializableGarlicCast;
 use async_trait::async_trait;
@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
+use primitive_types::U256;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -57,7 +58,7 @@ pub struct GarlemliaInfo {
     pub node: Arc<Mutex<Node>>,
     pub message_handler: Arc<Box<dyn GMessage>>,
     pub routing_table: Arc<Mutex<RoutingTable>>,
-    pub data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
+    pub data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
     pub garlic: Arc<Mutex<GarlicCast>>,
 }
 
@@ -65,7 +66,7 @@ impl GarlemliaInfo {
     pub fn from(node: Arc<Mutex<Node>>,
                 message_handler: Arc<Box<dyn GMessage>>,
                 routing_table: Arc<Mutex<RoutingTable>>,
-                data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
+                data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
                 garlic: Arc<Mutex<GarlicCast>>) -> GarlemliaInfo {
         GarlemliaInfo {
             node,
@@ -147,10 +148,10 @@ impl Simulator {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
-    pub id: u128,
+    pub id: U256,
     pub address: String,
     pub routing_table: SerializableRoutingTable,
-    pub data_store: HashMap<u128, GarlemliaData>,
+    pub data_store: HashMap<U256, GarlemliaData>,
     pub file_storage: String,
     pub garlic: SerializableGarlicCast
 }
@@ -159,13 +160,13 @@ pub struct FileNode {
 pub struct SimulatedNode {
     pub node: Node,
     pub routing_table: Arc<Mutex<RoutingTable>>,
-    pub data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
+    pub data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
     pub file_storage: Arc<Mutex<FileStorage>>,
     pub garlic: Arc<Mutex<GarlicCast>>
 }
 
 impl SimulatedNode {
-    pub fn new(node: Node, rt: RoutingTable, ds: HashMap<u128, GarlemliaData>, gc: GarlicCast, fs: FileStorage) -> SimulatedNode {
+    pub fn new(node: Node, rt: RoutingTable, ds: HashMap<U256, GarlemliaData>, gc: GarlicCast, fs: FileStorage) -> SimulatedNode {
         SimulatedNode {
             node,
             routing_table: Arc::new(Mutex::new(rt)),
@@ -179,7 +180,7 @@ impl SimulatedNode {
         self.routing_table.lock().await.update_from(rt).await;
     }
 
-    async fn set_data_store(&mut self, data_store: &mut HashMap<u128, GarlemliaData>) {
+    async fn set_data_store(&mut self, data_store: &mut HashMap<U256, GarlemliaData>) {
         {
             self.data_store.lock().await.clear();
         }
@@ -221,7 +222,7 @@ async fn add_to_routing_table(routing_table: Arc<Mutex<RoutingTable>>, node: Nod
 }
 
 async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
-                               data_store: Arc<Mutex<HashMap<u128, GarlemliaData>>>,
+                               data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
                                garlic_cast: Arc<Mutex<GarlicCast>>,
                                sender_node: Node,
                                self_node: Node,
@@ -905,16 +906,16 @@ pub async fn create_random_simulated_nodes(count: u16) -> Vec<SimulatedNode> {
 
     if dir_path.exists() && dir_path.is_dir() {
         fs::remove_dir_all(dir_path).await.unwrap();
-        println!("Old Simulated Node Folder Removed!");
+        println!("Old Simulated Nodes Folder Removed!");
     }
 
     fs::create_dir(dir_path).await.unwrap();
 
     for i in 0..count {
-        let mut id = rand::random::<u128>();
+        let mut id = u256_random();
         while used_ids.contains(&id) {
             println!("TRIED TO USE COPY OF ID {}", id);
-            id = rand::random::<u128>();
+            id = u256_random();
         }
 
         let mut dir_id = dir_path.join(id.to_string());
