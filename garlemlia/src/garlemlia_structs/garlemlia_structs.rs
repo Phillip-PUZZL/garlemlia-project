@@ -845,6 +845,17 @@ impl CloveMessage {
         }
     }
 
+    pub fn proxy_id(&self) -> Option<U256> {
+        match self {
+            CloveMessage::RequestProxy { .. } => {None}
+            CloveMessage::ProxyInfo { .. } => {None}
+            CloveMessage::SearchOverlay { proxy_id, .. } => {Some(proxy_id.clone())}
+            CloveMessage::SearchGarlemlia { .. } => {None}
+            CloveMessage::ResponseDirect { .. } => {None}
+            CloveMessage::ResponseWithValidator { proxy_id, .. } => {Some(proxy_id.clone())}
+        }
+    }
+
     pub fn is_request(&self) -> bool {
         match self {
             CloveMessage::RequestProxy { .. } => {false}

@@ -15,7 +15,7 @@ use crate::garlic_cast::garlic_cast;
 use garlemlia_structs::{Node, MessageChannel, DEFAULT_K, GMessage, GarlemliaMessage, RoutingTable, LOOKUP_ALPHA};
 use garlic_cast::{GarlicCast};
 use crate::file_utils::garlemlia_files::FileStorage;
-use crate::garlemlia_structs::garlemlia_structs::GarlemliaData;
+use crate::garlemlia_structs::garlemlia_structs::{CloveMessage, GarlemliaData};
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -260,7 +260,29 @@ impl Garlemlia {
                         GarlemliaMessage::Garlic { msg, sender } => {
                             let mut rt = routing_table.lock().await;
                             rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
-                            let _ = garlic.lock().await.recv(sender, msg).await;
+                            let action_res = garlic.lock().await.recv(sender, msg).await;
+
+                            if action_res.is_ok() {
+                                let action_opt = action_res.unwrap();
+                                if action_opt.is_some() {
+                                    let action = action_opt.unwrap();
+
+                                    match action {
+                                        // TODO: Configure this to take action on whatever garlic cast returns
+                                        // TODO: Then send that info back to garlic cast to process
+                                        CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key } => {
+
+                                        }
+                                        CloveMessage::SearchGarlemlia { request_id, key, public_key } => {
+
+                                        }
+                                        CloveMessage::ResponseWithValidator { request_id, proxy_id, data, public_key } => {
+
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
 
                         GarlemliaMessage::Ping { .. } => {
