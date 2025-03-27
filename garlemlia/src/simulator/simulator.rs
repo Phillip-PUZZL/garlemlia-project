@@ -133,8 +133,28 @@ impl Simulator {
     // TODO: Modify FileNode and SimulatedNode to have is_alive: boolean key-value pairs
     // TODO: After done, need to create an event loop which randomly connects and disconnects
     // TODO: existing Node's and also creates random new nodes to join the network.
-    pub fn node_is_alive(&self, _address: SocketAddr) -> bool {
-        true
+    pub async fn node_is_alive(&self, address: SocketAddr) -> bool {
+        if let Some(node) = self.nodes.get(&address) {
+            node.lock().await.is_online
+        } else {
+            false
+        }
+    }
+
+    pub async fn disconnect(&mut self, address: SocketAddr) -> Result<(), ()> {
+        if let Some(node) = self.nodes.get_mut(&address) {
+            node.lock().await.set_is_online(false);
+            return Ok(());
+        }
+        Err(())
+    }
+
+    pub async fn connect(&mut self, address: SocketAddr) -> Result<(), ()> {
+        if let Some(node) = self.nodes.get_mut(&address) {
+            node.lock().await.set_is_online(true);
+            return Ok(());
+        }
+        Err(())
     }
 
     pub fn add_fail(&mut self) {
@@ -153,7 +173,8 @@ pub struct FileNode {
     pub routing_table: SerializableRoutingTable,
     pub data_store: HashMap<U256, GarlemliaData>,
     pub file_storage: String,
-    pub garlic: SerializableGarlicCast
+    pub garlic: SerializableGarlicCast,
+    pub is_online: bool
 }
 
 #[derive(Debug, Clone)]
@@ -162,17 +183,19 @@ pub struct SimulatedNode {
     pub routing_table: Arc<Mutex<RoutingTable>>,
     pub data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
     pub file_storage: Arc<Mutex<FileStorage>>,
-    pub garlic: Arc<Mutex<GarlicCast>>
+    pub garlic: Arc<Mutex<GarlicCast>>,
+    pub is_online: bool
 }
 
 impl SimulatedNode {
-    pub fn new(node: Node, rt: RoutingTable, ds: HashMap<U256, GarlemliaData>, gc: GarlicCast, fs: FileStorage) -> SimulatedNode {
+    pub fn new(node: Node, rt: RoutingTable, ds: HashMap<U256, GarlemliaData>, gc: GarlicCast, fs: FileStorage, is_online: bool) -> SimulatedNode {
         SimulatedNode {
             node,
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(ds)),
             file_storage: Arc::new(Mutex::new(fs)),
-            garlic: Arc::new(Mutex::new(gc))
+            garlic: Arc::new(Mutex::new(gc)),
+            is_online
         }
     }
 
@@ -195,7 +218,14 @@ impl SimulatedNode {
     }
 
     async fn parse_message(&mut self, sender_node: Node, msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
-        parse_message_generic(self.routing_table.clone(), self.data_store.clone(), self.garlic.clone(), sender_node, self.node.clone(), msg, true).await
+        if self.is_online {
+            return parse_message_generic(self.routing_table.clone(), self.data_store.clone(), self.garlic.clone(), sender_node, self.node.clone(), msg).await;
+        }
+        Err(Some(MessageError::Timeout))
+    }
+
+    fn set_is_online(&mut self, is_online: bool) {
+        self.is_online = is_online;
     }
 }
 
@@ -208,7 +238,7 @@ async fn add_to_routing_table(routing_table: Arc<Mutex<RoutingTable>>, node: Nod
         if let Some(lru_node) = bucket.nodes.front().cloned() {
             let mut is_alive = false;
             {
-                is_alive = SIM.lock().await.node_is_alive(lru_node.address);
+                is_alive = SIM.lock().await.node_is_alive(lru_node.address).await;
             }
 
             if is_alive {
@@ -226,8 +256,7 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                                garlic_cast: Arc<Mutex<GarlicCast>>,
                                sender_node: Node,
                                self_node: Node,
-                               msg: GarlemliaMessage,
-                               is_sim: bool) -> Result<GarlemliaMessage, Option<MessageError>> {
+                               msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
     match msg {
         GarlemliaMessage::FindNode { id, .. } => {
             // Add the sender to the routing table
@@ -303,50 +332,26 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
         }
 
         GarlemliaMessage::Garlic { msg, sender } => {
+            add_to_routing_table(routing_table.clone(), sender_node.clone()).await;
+            let sender_clone = sender_node.clone();
+            let msg_clone = msg.clone();
+            let garlic = Arc::clone(&garlic_cast);
 
-            //println!("Before SIM lock 2");
-            let mut is_alive = false;
-            if is_sim {
-                is_alive = SIM.lock().await.node_is_alive(self_node.address);
-            } else {
-                is_alive = true;
-            }
-            //println!("After SIM lock 2");
+            tokio::spawn(async move {
+                let _ = garlic.lock().await.recv(sender_clone, msg_clone).await;
+            });
 
-            if is_alive {
-                add_to_routing_table(routing_table.clone(), sender_node.clone()).await;
-                let sender_clone = sender_node.clone();
-                let msg_clone = msg.clone();
-                let garlic = Arc::clone(&garlic_cast);
-
-                tokio::spawn(async move {
-                    let _ = garlic.lock().await.recv(sender_clone, msg_clone).await;
-                });
-
-                match msg {
-                    GarlicMessage::RequestAlt { .. } => {
-                        return Ok(GarlemliaMessage::AgreeAlt { alt_sequence_number: msg.sequence_number(), sender: self_node.clone() })
-                    }
-                    _ => {}
+            match msg {
+                GarlicMessage::RequestAlt { .. } => {
+                    return Ok(GarlemliaMessage::AgreeAlt { alt_sequence_number: msg.sequence_number(), sender: self_node.clone() })
                 }
-                return Ok(GarlemliaMessage::Pong { sender: self_node.clone() })
+                _ => {}
             }
-            Err(Some(MessageError::Timeout))
+            Ok(GarlemliaMessage::Pong { sender: self_node.clone() })
         }
 
         GarlemliaMessage::Ping { .. } => {
-            let mut is_alive = false;
-            if is_sim {
-                is_alive = SIM.lock().await.node_is_alive(self_node.address);
-            } else {
-                is_alive = true;
-            }
-
-            if is_alive {
-                Ok(GarlemliaMessage::Pong { sender: self_node.clone() })
-            } else {
-                Err(Some(MessageError::Timeout))
-            }
+            Ok(GarlemliaMessage::Pong { sender: self_node.clone() })
         }
 
         GarlemliaMessage::Pong { .. } => {
@@ -370,7 +375,7 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
 async fn parse_message_running(garl: Arc<Mutex<GarlemliaInfo>>, sender_node: Node, msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
     let garlemlia = garl.lock().await;
     let node = garlemlia.node.lock().await.clone();
-    parse_message_generic(garlemlia.routing_table.clone(), garlemlia.data_store.clone(), garlemlia.garlic.clone(), sender_node, node.clone(), msg, false).await
+    parse_message_generic(garlemlia.routing_table.clone(), garlemlia.data_store.clone(), garlemlia.garlic.clone(), sender_node, node.clone(), msg).await
 }
 
 pub fn simulated_to_gmessage(local_addr: SocketAddr) -> Box<dyn GMessage> {
@@ -637,7 +642,7 @@ async fn file_node_to_simulated(file_node: FileNode) -> Option<SimulatedNode> {
     let file_storage = FileStorage::load(file_node.file_storage).await;
     match file_storage {
         Ok(file_storage) => {
-            Some(SimulatedNode::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() }, file_node.routing_table.to_routing_table(), file_node.data_store, file_node.garlic.to_garlic(), file_storage))
+            Some(SimulatedNode::new(Node { id: file_node.id, address: file_node.address.parse().unwrap() }, file_node.routing_table.to_routing_table(), file_node.data_store, file_node.garlic.to_garlic(), file_storage, file_node.is_online))
         }
         Err(em) => {
             println!("Error loading file storage: {:?}", em);
@@ -653,7 +658,8 @@ async fn simulated_node_to_file(sim_node: SimulatedNode) -> FileNode {
         routing_table: SerializableRoutingTable::from(sim_node.routing_table.lock().await.clone()).await,
         data_store: sim_node.data_store.lock().await.clone(),
         file_storage: sim_node.file_storage.lock().await.file_storage_settings_path.clone(),
-        garlic: SerializableGarlicCast::from(sim_node.garlic.lock().await.clone()).await
+        garlic: SerializableGarlicCast::from(sim_node.garlic.lock().await.clone()).await,
+        is_online: sim_node.is_online
     }
 }
 
@@ -811,7 +817,8 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>, mut keys: Vec<KeyFile
             routing_table: nodes[0].routing_table.clone(),
             data_store: nodes[0].data_store.clone(),
             file_storage: nodes[0].file_storage.clone(),
-            garlic: nodes[0].garlic.clone()
+            garlic: nodes[0].garlic.clone(),
+            is_online: true
         }).await;
     }
 
@@ -886,7 +893,8 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>, mut keys: Vec<KeyFile
                 routing_table: Arc::new(Mutex::new(rt.clone())),
                 data_store: Arc::new(Mutex::new(ds)),
                 file_storage: Arc::new(Mutex::new(fs)),
-                garlic: Arc::new(Mutex::new(gar))
+                garlic: Arc::new(Mutex::new(gar)),
+                is_online: true
             }).await;
         }
 
@@ -938,7 +946,8 @@ pub async fn create_random_simulated_nodes(count: u16) -> Vec<SimulatedNode> {
             routing_table: Arc::new(Mutex::new(RoutingTable::new(node.clone()))),
             data_store: Arc::new(Mutex::new(HashMap::new())),
             file_storage: Arc::new(Mutex::new(file_storage)),
-            garlic: Arc::new(Mutex::new(GarlicCast::new(get_global_socket().unwrap(), node.clone(), Arc::new(simulated_to_gmessage(node.address)), vec![], None, None)))
+            garlic: Arc::new(Mutex::new(GarlicCast::new(get_global_socket().unwrap(), node.clone(), Arc::new(simulated_to_gmessage(node.address)), vec![], None, None))),
+            is_online: true
         });
     }
 

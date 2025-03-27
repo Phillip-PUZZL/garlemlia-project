@@ -769,6 +769,7 @@ impl GarlemliaMessage {
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Clove {
     pub sequence_number: U256,
+    pub request_id: U256,
     pub msg_fragment: Vec<u8>,
     pub key_fragment: Vec<u8>,
     pub sent: DateTime<Utc>,
@@ -895,6 +896,11 @@ pub enum GarlicMessage {
     UpdateAlt {
         sequence_number: U256,
         alt_node: CloveNode
+    },
+    UpdateAltNextOrLast {
+        sequence_number: U256,
+        old_node: Node,
+        new_node: Node
     }
 }
 
@@ -907,6 +913,7 @@ impl GarlicMessage {
             GarlicMessage::RequestAlt { .. } => {U256::from(0)}
             GarlicMessage::RefreshAlt { .. } => {U256::from(0)}
             GarlicMessage::UpdateAlt { .. } => {U256::from(0)}
+            GarlicMessage::UpdateAltNextOrLast { .. } => {U256::from(0)}
         }
     }
 
@@ -936,6 +943,7 @@ impl GarlicMessage {
             GarlicMessage::RequestAlt { .. } => {None}
             GarlicMessage::RefreshAlt { .. } => {None}
             GarlicMessage::UpdateAlt { .. } => {None}
+            GarlicMessage::UpdateAltNextOrLast { .. } => {None}
         }
     }
 

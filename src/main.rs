@@ -189,7 +189,7 @@ async fn garlemlia_console() {
             let result = re.captures(&*s);
             let Some(file_info) = result else {
                 println!("NO PATH GIVEN");
-                return;
+                continue;
             };
             let file_path = file_info[1].to_string();
 
@@ -210,7 +210,7 @@ async fn garlemlia_console() {
             let result = re.captures(&*s);
             let Some(file_info) = result else {
                 println!("NO PATH GIVEN");
-                return;
+                continue;
             };
             let file_path = file_info[1].to_string();
 
@@ -231,14 +231,14 @@ async fn garlemlia_console() {
             let result = re.captures(&*s);
             let Some(capture_info) = result else {
                 println!("NO PATH GIVEN");
-                return;
+                continue;
             };
             let address = capture_info[1].to_string();
 
             let result = re2.captures(&*s);
             let Some(capture_info) = result else {
                 println!("NO PATH GIVEN");
-                return;
+                continue;
             };
             let port: u16 = capture_info[1].to_string().parse::<u16>().unwrap();
 
@@ -257,7 +257,7 @@ async fn garlemlia_console() {
                 let result = re.captures(&*s);
                 let Some(file_info) = result else {
                     println!("NO FILE NAME GIVEN");
-                    return;
+                    continue;
                 };
                 let file_name = file_info[1].to_string();
 
@@ -273,7 +273,51 @@ async fn garlemlia_console() {
                     running_nodes[selected].garlic.lock().await.send_search_kademlia(search_proxy_ids.clone(), value).await;
                 }
             }
-        } else if s.starts_with("CREATE SIMULATED") {
+        } else if s.starts_with("CONNECT SIMULATED ") {
+            let re = Regex::new(r"CONNECT SIMULATED (.+)").unwrap();
+            let result = re.captures(&*s);
+            let Some(node_info) = result else {
+                println!("NO NODE GIVEN");
+                continue;
+            };
+            let mut node_address = node_info[1].to_string();
+            node_address = node_address.replace("::", "127.0.0.1:");
+
+            let address_vec = node_address.split(':').collect::<Vec<&str>>();
+
+            {
+                let res = SIM.lock().await.connect(SocketAddr::new(address_vec[0].parse().unwrap(), address_vec[1].parse().unwrap())).await;
+
+                match res {
+                    Ok(_) => {}
+                    Err(_) => {
+                        println!("COULD NOT FIND SIMULATED NODE");
+                    }
+                }
+            }
+        } else if s.starts_with("DISCONNECT SIMULATED ") {
+            let re = Regex::new(r"DISCONNECT SIMULATED (.+)").unwrap();
+            let result = re.captures(&*s);
+            let Some(node_info) = result else {
+                println!("NO NODE GIVEN");
+                continue;
+            };
+            let mut node_address = node_info[1].to_string();
+            node_address = node_address.replace("::", "127.0.0.1:");
+
+            let address_vec = node_address.split(':').collect::<Vec<&str>>();
+
+            {
+                let res = SIM.lock().await.disconnect(SocketAddr::new(address_vec[0].parse().unwrap(), address_vec[1].parse().unwrap())).await;
+
+                match res {
+                    Ok(_) => {}
+                    Err(_) => {
+                        println!("COULD NOT FIND SIMULATED NODE");
+                    }
+                }
+            }
+        }  else if s.starts_with("CREATE SIMULATED") {
             create_test_nodes().await;
 
             match load_simulated_nodes("./test_nodes.json").await {
