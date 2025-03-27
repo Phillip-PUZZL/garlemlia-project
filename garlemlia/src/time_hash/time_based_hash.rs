@@ -8,7 +8,7 @@ use hmac::{Hmac, Mac};
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct HashLocations {
+pub struct HashLocation {
     time: DateTime<Utc>,
     id: U256
 }
@@ -34,10 +34,20 @@ impl RotatingHash {
         self.stored_on = Some(Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour(), 0, 0).unwrap());
     }
 
-    pub fn get_current(&self) -> Option<U256> {
+    pub fn get_current(&self) -> Option<HashLocation> {
         match self.stored_on {
             Some(stored_time) => {
-                RotatingHash::compute_rotating_id(self.seed, stored_time, self.rotation_time_hours, Utc::now())
+                let now = Utc::now();
+                let time_id = RotatingHash::compute_rotating_id(self.seed, stored_time, self.rotation_time_hours, now);
+
+                match time_id {
+                    Some(time_id) => {
+                        Some(HashLocation { time: now, id: time_id })
+                    }
+                    None => {
+                        None
+                    }
+                }
             }
             None => {
                 None
@@ -45,19 +55,21 @@ impl RotatingHash {
         }
     }
 
-    pub fn get_next(&self, hours: u8) -> Option<Vec<HashLocations>> {
+    pub fn get_next(&self, count: u8, interval: f64) -> Option<Vec<HashLocation>> {
         match self.stored_on {
             Some(stored_time) => {
                 let mut value_vec = vec![];
                 let now = Utc::now();
 
-                for i in 0..hours {
-                    let analysis_time = Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour() + i as u32, 0, 0).unwrap();
+                for i in 0..count {
+                    let next_interval = (interval * i as f64 * 3600.0).round() as i64;
+                    let analysis_time = DateTime::from_timestamp(now.timestamp() + next_interval, 0).unwrap();
+                    //let analysis_time = Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour() + i as u32, 0, 0).unwrap();
                     let time_id = RotatingHash::compute_rotating_id(self.seed, stored_time, self.rotation_time_hours, analysis_time);
 
                     match time_id {
                         Some(time_id) => {
-                            value_vec.push(HashLocations { time: analysis_time, id: time_id });
+                            value_vec.push(HashLocation { time: analysis_time, id: time_id });
                         }
                         None => {
                             return None;
