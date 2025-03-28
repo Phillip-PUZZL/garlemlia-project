@@ -15,7 +15,320 @@ use crate::garlic_cast::garlic_cast;
 use garlemlia_structs::{Node, MessageChannel, DEFAULT_K, GMessage, GarlemliaMessage, RoutingTable, LOOKUP_ALPHA};
 use garlic_cast::{GarlicCast};
 use crate::file_utils::garlemlia_files::FileStorage;
-use crate::garlemlia_structs::garlemlia_structs::{CloveMessage, GarlemliaData};
+use crate::garlemlia_structs::garlemlia_structs::{CloveMessage, GarlemliaData, GarlemliaFindRequest, GarlemliaResponse, GarlemliaStoreRequest};
+
+pub struct GarlemliaFunctions {}
+
+impl GarlemliaFunctions {
+    pub async fn iterative_find_node(socket: Arc<UdpSocket>,
+                                     self_node: Node,
+                                     routing_table: Arc<Mutex<RoutingTable>>,
+                                     message_handler: Arc<Box<dyn GMessage>>,
+                                     garlic: Arc<Mutex<GarlicCast>>,
+                                     target_id: U256) -> Vec<Node> {
+        let mut queried_nodes = HashSet::new();
+
+        // Get initial candidate set from the routing table.
+        let mut initial_nodes = routing_table.lock().await
+            .find_closest_nodes(target_id, LOOKUP_ALPHA)
+            .await;
+        if initial_nodes.contains(&self_node) {
+            initial_nodes = routing_table.lock().await
+                .find_closest_nodes(target_id, LOOKUP_ALPHA + 1)
+                .await;
+            initial_nodes.retain(|x| *x != self_node);
+        }
+        // Initialize candidate set (top_k)
+        let mut top_k = initial_nodes.clone();
+        top_k.sort_by_key(|n| n.id ^ target_id);
+        top_k.truncate(DEFAULT_K);
+
+        // Initialize nodes to query from the candidate set.
+        let mut nodes_to_query: Vec<Node> = top_k
+            .iter()
+            .filter(|n| !queried_nodes.contains(&n.address))
+            .cloned()
+            .collect();
+        if nodes_to_query.len() > LOOKUP_ALPHA {
+            nodes_to_query.truncate(LOOKUP_ALPHA);
+        }
+
+        loop {
+            let mut tasks = Vec::new();
+            // Query all nodes that haven't been queried yet (up to α)
+            for node in nodes_to_query.iter() {
+                if queried_nodes.contains(&node.address) {
+                    continue;
+                }
+
+                queried_nodes.insert(node.address);
+                let socket_clone = Arc::clone(&socket);
+                let node_clone = node.clone();
+                let message_handler = Arc::clone(&message_handler);
+                let self_thread_node = self_node.clone();
+
+                let task = tokio::spawn(async move {
+                    let message = GarlemliaMessage::FindNode {
+                        id: target_id,
+                        sender: self_thread_node.clone(),
+                    };
+
+                    if let Err(e) = message_handler.send(&socket_clone, self_thread_node.clone(), &node_clone.address, &message).await {
+                        eprintln!("Failed to send FindNode to {}: {:?}", node_clone.address, e);
+                    }
+
+                    let response = message_handler.recv(200, &node_clone.address).await;
+                    if let Ok(msg) = response {
+                        if let GarlemliaMessage::Response { nodes, .. } = msg {
+                            return Some(nodes);
+                        }
+                    }
+                    None
+                });
+                tasks.push(task);
+            }
+
+            // Gather all new nodes returned by this round.
+            let mut new_nodes = vec![];
+            for task in tasks {
+                if let Ok(Some(nodes)) = task.await {
+                    new_nodes.extend(nodes);
+                }
+            }
+
+            {
+                // Adds to list of known nodes
+                garlic.lock().await.update_known(new_nodes.clone()).await;
+            }
+
+            // Merge new nodes into our candidate set.
+            let mut new_candidate_set = top_k.clone();
+            new_candidate_set.extend(new_nodes.clone());
+            new_candidate_set.sort_by_key(|n| n.id ^ target_id);
+            new_candidate_set.dedup();
+            new_candidate_set.retain(|n| *n != self_node);
+            new_candidate_set.truncate(DEFAULT_K);
+
+            // Compare candidate sets using IDs (order-independent)
+            let old_ids: HashSet<U256> = top_k.iter().map(|n| n.id).collect();
+            let new_ids: HashSet<U256> = new_candidate_set.iter().map(|n| n.id).collect();
+            if old_ids == new_ids {
+                break;
+            }
+            top_k = new_candidate_set;
+
+            // Update nodes to query: those in the new candidate set not yet queried.
+            nodes_to_query = top_k
+                .iter()
+                .filter(|node| !queried_nodes.contains(&node.address))
+                .cloned()
+                .collect();
+            if nodes_to_query.len() > LOOKUP_ALPHA {
+                nodes_to_query.truncate(LOOKUP_ALPHA);
+            }
+            if nodes_to_query.is_empty() {
+                break;
+            }
+        }
+
+        // Add self to the candidate set, sort and truncate before returning.
+        let mut result = top_k;
+        result.push(self_node.clone());
+        result.dedup();
+        result.sort_by_key(|n| n.id ^ target_id);
+        result.truncate(DEFAULT_K);
+        result
+    }
+
+
+    // Perform an iterative lookup for a value in the DHT
+    pub async fn iterative_find_value(socket: Arc<UdpSocket>,
+                                      self_node: Node,
+                                      routing_table: Arc<Mutex<RoutingTable>>,
+                                      message_handler: Arc<Box<dyn GMessage>>,
+                                      data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
+                                      request: GarlemliaFindRequest) -> Option<GarlemliaResponse> {
+        let key = request.get_id();
+        // Check if this node has the value first
+        let local = data_store.lock().await.get(&key).cloned();
+        match local {
+            Some(val) => {
+                return val.get_response(request);
+            }
+            _ => {}
+        }
+
+        let mut queried_nodes = HashSet::new();
+
+        // Get initial candidate set from the routing table.
+        let mut initial_nodes = routing_table.lock().await
+            .find_closest_nodes(key, LOOKUP_ALPHA)
+            .await;
+        if initial_nodes.contains(&self_node) {
+            initial_nodes = routing_table.lock().await
+                .find_closest_nodes(key, LOOKUP_ALPHA + 1)
+                .await;
+            initial_nodes.retain(|x| *x != self_node);
+        }
+        // Initialize candidate set (top_k)
+        let mut top_k = initial_nodes.clone();
+        top_k.sort_by_key(|n| n.id ^ key);
+        top_k.truncate(DEFAULT_K);
+
+        // Initialize nodes to query from the candidate set.
+        let mut nodes_to_query: Vec<Node> = top_k
+            .iter()
+            .filter(|n| !queried_nodes.contains(&n.address))
+            .cloned()
+            .collect();
+        if nodes_to_query.len() > LOOKUP_ALPHA {
+            nodes_to_query.truncate(LOOKUP_ALPHA);
+        }
+
+        loop {
+            let mut tasks = Vec::new();
+
+            for node in nodes_to_query.iter() {
+                if queried_nodes.contains(&node.address) {
+                    continue;
+                }
+
+                queried_nodes.insert(node.address);
+                let socket_clone = Arc::clone(&socket);
+                let node_clone = node.clone();
+                let message_handler = Arc::clone(&message_handler);
+                let self_thread_node = self_node.clone();
+                let request_clone = request.clone();
+
+                // Spawn async task for each lookup request
+                let task = task::spawn(async move {
+                    let message = GarlemliaMessage::FindValue {
+                        request: request_clone,
+                        sender: self_thread_node.clone(),
+                    };
+
+                    {
+                        if let Err(e) = message_handler.send(&socket_clone, self_thread_node.clone(), &node_clone.address, &message).await {
+                            eprintln!("Failed to send FindValue to {}: {:?}", node_clone.address, e);
+                        }
+                    }
+
+                    let response;
+                    {
+                        response = message_handler.recv(200, &node_clone.address).await;
+                    }
+
+                    if response.is_ok() {
+                        let msg = response.unwrap();
+                        match msg {
+                            GarlemliaMessage::Response { nodes, value, .. } => {
+                                if let Some(value) = value {
+                                    return Some(Ok(value))
+                                }
+                                Some(Err(nodes))
+                            }
+                            _ => {
+                                Some(Err(vec![]))
+                            }
+                        }
+                    } else {
+                        Some(Err(vec![]))
+                    }
+                });
+
+                tasks.push(task);
+            }
+
+            // Collect results from tasks
+            let mut new_nodes = vec![];
+            for task in tasks {
+                if let Ok(Some(result)) = task.await {
+                    match result {
+                        Ok(value) => return Some(value), // Return immediately if value is found
+                        Err(received_nodes) => {
+                            new_nodes.extend(received_nodes);
+                        }
+                    }
+                }
+            }
+
+            // Merge new nodes into our candidate set.
+            let mut new_candidate_set = top_k.clone();
+            new_candidate_set.extend(new_nodes.clone());
+            new_candidate_set.sort_by_key(|n| n.id ^ key);
+            new_candidate_set.truncate(DEFAULT_K);
+
+            // Compare candidate sets using IDs (order-independent)
+            let old_ids: HashSet<U256> = top_k.iter().map(|n| n.id).collect();
+            let new_ids: HashSet<U256> = new_candidate_set.iter().map(|n| n.id).collect();
+            if old_ids == new_ids {
+                break;
+            }
+            top_k = new_candidate_set;
+
+            // Update nodes to query: those in the new candidate set not yet queried.
+            nodes_to_query = top_k
+                .iter()
+                .filter(|node| !queried_nodes.contains(&node.address))
+                .cloned()
+                .collect();
+            if nodes_to_query.len() > LOOKUP_ALPHA {
+                nodes_to_query.truncate(LOOKUP_ALPHA);
+            }
+            if nodes_to_query.is_empty() {
+                break;
+            }
+        }
+
+        None
+    }
+
+    pub async fn store_value(socket: Arc<UdpSocket>,
+                             self_node: Node,
+                             routing_table: Arc<Mutex<RoutingTable>>,
+                             message_handler: Arc<Box<dyn GMessage>>,
+                             data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
+                             garlic: Arc<Mutex<GarlicCast>>,
+                             file_storage: Arc<Mutex<FileStorage>>,
+                             request: GarlemliaStoreRequest, store_count: usize) -> Vec<Node> {
+        // Find the closest nodes to store the value
+        let mut closest_nodes = GarlemliaFunctions::iterative_find_node(Arc::clone(&socket), self_node.clone(), Arc::clone(&routing_table), Arc::clone(&message_handler), Arc::clone(&garlic), request.get_id()).await;
+        closest_nodes.truncate(store_count);
+
+        for node in closest_nodes.clone() {
+            if node.id == self_node.id {
+                let mut store_val = request.to_store_data();
+
+                if request.is_chunk() {
+                    let _ = file_storage.lock().await.store_chunk(request.get_id(), request.chunk_get_data().unwrap()).await;
+                }
+
+                // Store the value locally if this node is among the closest
+                let mut data_store = data_store.lock().await;
+                if store_val.is_some() {
+                    data_store.insert(request.get_id(), store_val.unwrap());
+                    continue;
+                }
+            }
+
+            // Create STORE message
+            let store_message = GarlemliaMessage::Store {
+                key: request.get_id(),
+                value: request.clone(),
+                sender: self_node.clone(),
+            };
+
+            // Send STORE message
+            {
+                if let Err(e) = message_handler.send_no_recv(&socket, self_node.clone(), &node.address, &store_message).await {
+                    eprintln!("Failed to send Store to {}: {:?}", node.address, e);
+                }
+            }
+        }
+
+        closest_nodes
+    }
+}
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -145,6 +458,7 @@ impl Garlemlia {
         let routing_table = Arc::clone(&self.routing_table);
         let data_store = Arc::clone(&self.data_store);
         let garlic = Arc::clone(&self.garlic);
+        let file_storage = Arc::clone(&self.file_storage);
         let stop_clone = Arc::clone(&self.stop_signal);
         println!("STARTING {}", socket.local_addr().unwrap());
 
@@ -206,20 +520,78 @@ impl Garlemlia {
                         // Store a key-value pair
                         GarlemliaMessage::Store { key, value, .. } => {
                             routing_table.lock().await.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
-                            data_store.lock().await.insert(key, value);
+
+                            let mut store_val = None;
+                            if value.is_validator() {
+                                let current;
+                                {
+                                    current = data_store.lock().await.get(&key).cloned();
+                                }
+
+                                if current.is_some() {
+                                    let stored_data = current.unwrap();
+                                    match stored_data {
+                                        GarlemliaData::Validator { id, proxy_ids, proxies } => {
+                                            let this_proxy_id = value.validator_get_proxy_id().unwrap();
+                                            let mut new_ids = proxy_ids;
+                                            new_ids.push(this_proxy_id);
+                                            let mut new_proxies = proxies;
+                                            new_proxies.insert(this_proxy_id, sender_node.clone().address);
+                                            store_val = Some(GarlemliaData::Validator {
+                                                id,
+                                                proxy_ids: new_ids,
+                                                proxies: new_proxies
+                                            });
+                                        }
+                                        _ => {
+                                            store_val = None;
+                                        }
+                                    }
+                                } else {
+                                    let this_proxy_id = value.validator_get_proxy_id().unwrap();
+                                    let mut set_proxies = HashMap::new();
+                                    set_proxies.insert(this_proxy_id, sender_node.clone().address);
+
+                                    store_val = Some(GarlemliaData::Validator {
+                                        id: key,
+                                        proxy_ids: vec![this_proxy_id],
+                                        proxies: set_proxies
+                                    });
+                                }
+                            } else {
+                                store_val = value.to_store_data();
+                            }
+
+                            if value.is_chunk() {
+                                let _ = file_storage.lock().await.store_chunk(key, value.chunk_get_data().unwrap()).await;
+                            }
+
+                            if store_val.is_some() {
+                                data_store.lock().await.insert(key, store_val.clone().unwrap());
+                            }
                         }
 
                         // Use find_closest_nodes() if value is not found
-                        GarlemliaMessage::FindValue { key, .. } => {
+                        GarlemliaMessage::FindValue { request, .. } => {
+                            let key = request.get_id();
                             let mut rt = routing_table.lock().await;
 
                             rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
                             let value = data_store.lock().await.get(&key).cloned();
 
                             let response = if let Some(val) = value {
+                                let mut val_response = val.get_response(request);
+                                if val.is_chunk() {
+                                    let chunk_data = file_storage.lock().await.get_chunk(val.get_id()).await;
+
+                                    if chunk_data.is_ok() {
+                                        val_response = val.get_chunk_response(chunk_data.unwrap());
+                                    }
+                                }
+
                                 GarlemliaMessage::Response {
                                     nodes: vec![],
-                                    value: Some(val),
+                                    value: val_response,
                                     sender: self_ref.clone(),
                                 }
                             } else {
@@ -271,13 +643,40 @@ impl Garlemlia {
                                         // TODO: Configure this to take action on whatever garlic cast returns
                                         // TODO: Then send that info back to garlic cast to process
                                         CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key } => {
-
+                                            let yeet_node;
+                                            {
+                                                yeet_node = self_node.lock().await.clone();
+                                            }
+                                            GarlemliaFunctions::store_value(Arc::clone(&socket), yeet_node,
+                                                                            Arc::clone(&routing_table),
+                                                                            Arc::clone(&message_handler),
+                                                                            Arc::clone(&data_store),
+                                                                            Arc::clone(&garlic),
+                                                                            Arc::clone(&file_storage),
+                                                                            GarlemliaStoreRequest::Validator { id: request_id, proxy_id },
+                                                                            3).await;
                                         }
                                         CloveMessage::SearchGarlemlia { request_id, key, public_key } => {
-
+                                            let yeet_node;
+                                            {
+                                                yeet_node = self_node.lock().await.clone();
+                                            }
+                                            let response_data = GarlemliaFunctions::iterative_find_value(Arc::clone(&socket), yeet_node,
+                                                                                                         Arc::clone(&routing_table),
+                                                                                                         Arc::clone(&message_handler),
+                                                                                                         Arc::clone(&data_store),
+                                                                                                         GarlemliaFindRequest::Key { id: key }).await;
                                         }
                                         CloveMessage::ResponseWithValidator { request_id, proxy_id, data, public_key } => {
-
+                                            let yeet_node;
+                                            {
+                                                yeet_node = self_node.lock().await.clone();
+                                            }
+                                            let response_data = GarlemliaFunctions::iterative_find_value(Arc::clone(&socket), yeet_node,
+                                                                                                         Arc::clone(&routing_table),
+                                                                                                         Arc::clone(&message_handler),
+                                                                                                         Arc::clone(&data_store),
+                                                                                                         GarlemliaFindRequest::Validator { id: request_id, proxy_id }).await;
                                         }
                                         _ => {}
                                     }
@@ -348,296 +747,29 @@ impl Garlemlia {
     }
 
     pub async fn iterative_find_node(&self, socket: Arc<UdpSocket>, target_id: U256) -> Vec<Node> {
-        let self_node = self.get_node().await;
-        let mut queried_nodes = HashSet::new();
-
-        // Get initial candidate set from the routing table.
-        let mut initial_nodes = self.routing_table
-            .lock()
-            .await
-            .find_closest_nodes(target_id, LOOKUP_ALPHA)
-            .await;
-        if initial_nodes.contains(&self_node) {
-            initial_nodes = self.routing_table
-                .lock()
-                .await
-                .find_closest_nodes(target_id, LOOKUP_ALPHA + 1)
-                .await;
-            initial_nodes.retain(|x| *x != self_node);
-        }
-        // Initialize candidate set (top_k)
-        let mut top_k = initial_nodes.clone();
-        top_k.sort_by_key(|n| n.id ^ target_id);
-        top_k.truncate(DEFAULT_K);
-
-        // Initialize nodes to query from the candidate set.
-        let mut nodes_to_query: Vec<Node> = top_k
-            .iter()
-            .filter(|n| !queried_nodes.contains(&n.address))
-            .cloned()
-            .collect();
-        if nodes_to_query.len() > LOOKUP_ALPHA {
-            nodes_to_query.truncate(LOOKUP_ALPHA);
-        }
-
-        loop {
-            let mut tasks = Vec::new();
-            // Query all nodes that haven't been queried yet (up to α)
-            for node in nodes_to_query.iter() {
-                if queried_nodes.contains(&node.address) {
-                    continue;
-                }
-
-                queried_nodes.insert(node.address);
-                let socket_clone = Arc::clone(&socket);
-                let node_clone = node.clone();
-                let message_handler = Arc::clone(&self.message_handler);
-                let self_thread_node = self_node.clone();
-
-                let task = tokio::spawn(async move {
-                    let message = GarlemliaMessage::FindNode {
-                        id: target_id,
-                        sender: self_thread_node.clone(),
-                    };
-
-                    if let Err(e) = message_handler.send(&socket_clone, self_thread_node.clone(), &node_clone.address, &message).await {
-                        eprintln!("Failed to send FindNode to {}: {:?}", node_clone.address, e);
-                    }
-
-                    let response = message_handler.recv(200, &node_clone.address).await;
-                    if let Ok(msg) = response {
-                        if let GarlemliaMessage::Response { nodes, .. } = msg {
-                            return Some(nodes);
-                        }
-                    }
-                    None
-                });
-                tasks.push(task);
-            }
-
-            // Gather all new nodes returned by this round.
-            let mut new_nodes = vec![];
-            for task in tasks {
-                if let Ok(Some(nodes)) = task.await {
-                    new_nodes.extend(nodes);
-                }
-            }
-
-            {
-                // Adds to list of known nodes
-                self.garlic.lock().await.update_known(new_nodes.clone()).await;
-            }
-
-            // Merge new nodes into our candidate set.
-            let mut new_candidate_set = top_k.clone();
-            new_candidate_set.extend(new_nodes.clone());
-            new_candidate_set.sort_by_key(|n| n.id ^ target_id);
-            new_candidate_set.dedup();
-            new_candidate_set.retain(|n| *n != self_node);
-            new_candidate_set.truncate(DEFAULT_K);
-
-            // Compare candidate sets using IDs (order-independent)
-            let old_ids: HashSet<U256> = top_k.iter().map(|n| n.id).collect();
-            let new_ids: HashSet<U256> = new_candidate_set.iter().map(|n| n.id).collect();
-            if old_ids == new_ids {
-                break;
-            }
-            top_k = new_candidate_set;
-
-            // Update nodes to query: those in the new candidate set not yet queried.
-            nodes_to_query = top_k
-                .iter()
-                .filter(|node| !queried_nodes.contains(&node.address))
-                .cloned()
-                .collect();
-            if nodes_to_query.len() > LOOKUP_ALPHA {
-                nodes_to_query.truncate(LOOKUP_ALPHA);
-            }
-            if nodes_to_query.is_empty() {
-                break;
-            }
-        }
-
-        // Add self to the candidate set, sort and truncate before returning.
-        let mut result = top_k;
-        result.push(self_node.clone());
-        result.dedup();
-        result.sort_by_key(|n| n.id ^ target_id);
-        result.truncate(DEFAULT_K);
-        result
+        GarlemliaFunctions::iterative_find_node(socket, self.get_node().await,
+                                                Arc::clone(&self.routing_table),
+                                                Arc::clone(&self.message_handler),
+                                                Arc::clone(&self.garlic), target_id).await
     }
 
 
     // Perform an iterative lookup for a value in the DHT
-    pub async fn iterative_find_value(&self, socket: Arc<UdpSocket>, key: U256) -> Option<GarlemliaData> {
-        let self_node = self.get_node().await;
-        // Check if this node has the value first
-        let local = self.data_store.lock().await.get(&key).cloned();
-        match local {
-            Some(val) => {
-                return Some(val);
-            }
-            _ => {}
-        }
-
-        let mut queried_nodes = HashSet::new();
-
-        // Get initial candidate set from the routing table.
-        let mut initial_nodes = self.routing_table
-            .lock()
-            .await
-            .find_closest_nodes(key, LOOKUP_ALPHA)
-            .await;
-        if initial_nodes.contains(&self_node) {
-            initial_nodes = self.routing_table
-                .lock()
-                .await
-                .find_closest_nodes(key, LOOKUP_ALPHA + 1)
-                .await;
-            initial_nodes.retain(|x| *x != self_node);
-        }
-        // Initialize candidate set (top_k)
-        let mut top_k = initial_nodes.clone();
-        top_k.sort_by_key(|n| n.id ^ key);
-        top_k.truncate(DEFAULT_K);
-
-        // Initialize nodes to query from the candidate set.
-        let mut nodes_to_query: Vec<Node> = top_k
-            .iter()
-            .filter(|n| !queried_nodes.contains(&n.address))
-            .cloned()
-            .collect();
-        if nodes_to_query.len() > LOOKUP_ALPHA {
-            nodes_to_query.truncate(LOOKUP_ALPHA);
-        }
-
-        loop {
-            let mut tasks = Vec::new();
-
-            for node in nodes_to_query.iter() {
-                if queried_nodes.contains(&node.address) {
-                    continue;
-                }
-
-                queried_nodes.insert(node.address);
-                let socket_clone = Arc::clone(&socket);
-                let node_clone = node.clone();
-                let message_handler = Arc::clone(&self.message_handler);
-                let self_thread_node = self_node.clone();
-
-                // Spawn async task for each lookup request
-                let task = task::spawn(async move {
-                    let message = GarlemliaMessage::FindValue {
-                        key,
-                        sender: self_thread_node.clone(),
-                    };
-
-                    {
-                        if let Err(e) = message_handler.send(&socket_clone, self_thread_node.clone(), &node_clone.address, &message).await {
-                            eprintln!("Failed to send FindValue to {}: {:?}", node_clone.address, e);
-                        }
-                    }
-
-                    let response;
-                    {
-                        response = message_handler.recv(200, &node_clone.address).await;
-                    }
-
-                    if response.is_ok() {
-                        let msg = response.unwrap();
-                        match msg {
-                            GarlemliaMessage::Response { nodes, value, .. } => {
-                                if let Some(value) = value {
-                                    return Some(Ok(value))
-                                }
-                                Some(Err(nodes))
-                            }
-                            _ => {
-                                Some(Err(vec![]))
-                            }
-                        }
-                    } else {
-                        Some(Err(vec![]))
-                    }
-                });
-
-                tasks.push(task);
-            }
-
-            // Collect results from tasks
-            let mut new_nodes = vec![];
-            for task in tasks {
-                if let Ok(Some(result)) = task.await {
-                    match result {
-                        Ok(value) => return Some(value), // Return immediately if value is found
-                        Err(received_nodes) => {
-                            new_nodes.extend(received_nodes);
-                        }
-                    }
-                }
-            }
-
-            // Merge new nodes into our candidate set.
-            let mut new_candidate_set = top_k.clone();
-            new_candidate_set.extend(new_nodes.clone());
-            new_candidate_set.sort_by_key(|n| n.id ^ key);
-            new_candidate_set.truncate(DEFAULT_K);
-
-            // Compare candidate sets using IDs (order-independent)
-            let old_ids: HashSet<U256> = top_k.iter().map(|n| n.id).collect();
-            let new_ids: HashSet<U256> = new_candidate_set.iter().map(|n| n.id).collect();
-            if old_ids == new_ids {
-                break;
-            }
-            top_k = new_candidate_set;
-
-            // Update nodes to query: those in the new candidate set not yet queried.
-            nodes_to_query = top_k
-                .iter()
-                .filter(|node| !queried_nodes.contains(&node.address))
-                .cloned()
-                .collect();
-            if nodes_to_query.len() > LOOKUP_ALPHA {
-                nodes_to_query.truncate(LOOKUP_ALPHA);
-            }
-            if nodes_to_query.is_empty() {
-                break;
-            }
-        }
-
-        None
+    pub async fn iterative_find_value(&self, socket: Arc<UdpSocket>, request: GarlemliaFindRequest) -> Option<GarlemliaResponse> {
+        GarlemliaFunctions::iterative_find_value(socket, self.get_node().await,
+                                                 Arc::clone(&self.routing_table),
+                                                 Arc::clone(&self.message_handler),
+                                                 Arc::clone(&self.data_store), request).await
     }
 
-    pub async fn store_value(&mut self, socket: Arc<UdpSocket>, key: U256, value: GarlemliaData) -> Vec<Node> {
-        let self_node = self.get_node().await;
-        // Find the closest nodes to store the value
-        let mut closest_nodes = self.iterative_find_node(Arc::clone(&socket), key).await;
-        closest_nodes.truncate(2);
-
-        for node in closest_nodes.clone() {
-            if node.id == self_node.id {
-                // Store the value locally if this node is among the closest
-                let mut data_store = self.data_store.lock().await;
-                data_store.insert(key, value.clone());
-                continue;
-            }
-
-            // Create STORE message
-            let store_message = GarlemliaMessage::Store {
-                key,
-                value: value.clone(),
-                sender: self_node.clone(),
-            };
-
-            // Send STORE message
-            {
-                if let Err(e) = self.message_handler.send_no_recv(&socket, self_node.clone(), &node.address, &store_message).await {
-                    eprintln!("Failed to send Store to {}: {:?}", node.address, e);
-                }
-            }
-        }
-
-        closest_nodes
+    pub async fn store_value(&mut self, socket: Arc<UdpSocket>, request: GarlemliaStoreRequest, store_count: usize) -> Vec<Node> {
+        GarlemliaFunctions::store_value(socket, self.get_node().await,
+                                        Arc::clone(&self.routing_table),
+                                        Arc::clone(&self.message_handler),
+                                        Arc::clone(&self.data_store),
+                                        Arc::clone(&self.garlic),
+                                        Arc::clone(&self.file_storage),
+                                        request, store_count).await
     }
 
     // Add a node to the routing table

@@ -19,7 +19,7 @@ async fn create_test_node(id: U256, port: u16) -> Garlemlia {
 
     let node = Garlemlia::new_with_details(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), simulated_to_gmessage(node_actual.address), get_global_socket().unwrap().clone(), public_key, private_key, Box::new(Path::new("./running_nodes_files"))).await;
 
-    add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic))).await;
+    add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic), Arc::clone(&node.file_storage))).await;
 
     node
 }

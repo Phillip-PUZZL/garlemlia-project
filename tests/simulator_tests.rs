@@ -7,7 +7,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use garlemlia::garlemlia::garlemlia::Garlemlia;
 use garlemlia::simulator::simulator::{get_global_socket, load_simulated_nodes, save_simulated_nodes, SimulatedMessageHandler, SIM, add_running, remove_running, init_socket_once, GarlemliaInfo};
-use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, RoutingTable, Node, GarlemliaData, u256_random};
+use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, RoutingTable, Node, GarlemliaData, u256_random, GarlemliaStoreRequest, GarlemliaFindRequest, GarlemliaResponse};
 
 async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
@@ -18,7 +18,7 @@ async fn create_test_node(id: U256, port: u16) -> Garlemlia {
 
     let mut node = Garlemlia::new_with_details(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone(), public_key, private_key, Box::new(Path::new("./running_nodes_files"))).await;
 
-    add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic))).await;
+    add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic), Arc::clone(&node.file_storage))).await;
 
     node
 }
@@ -111,12 +111,12 @@ async fn simulated_node_store_test() {
             println!("STORE:\nKey: {}, Value: {}", key, value);
 
             // Perform store
-            let store_nodes = node1.store_value(Arc::clone(&node1.socket), key, GarlemliaData::Value { id: key, value: value.clone() }).await;
+            let store_nodes = node1.store_value(Arc::clone(&node1.socket), GarlemliaStoreRequest::Value { id: key, value: value.clone() }, 2).await;
             println!("Send Store");
             assert_eq!(store_nodes.len(), 2, "Should have stored in 2 nodes");
 
             // Perform search
-            let found_value_option = node2.iterative_find_value(Arc::clone(&node2.socket), key).await;
+            let found_value_option = node2.iterative_find_value(Arc::clone(&node2.socket), GarlemliaFindRequest::Key { id: key }).await;
             println!("Search Value");
             assert!(found_value_option.is_some(), "Did not find value");
             let found_value = found_value_option;
@@ -127,7 +127,7 @@ async fn simulated_node_store_test() {
             match found_value {
                 Some(found_value_yeet) => {
                     match found_value_yeet {
-                        GarlemliaData::Value { id: _, value: found_value } => {
+                        GarlemliaResponse::Value { value: found_value } => {
                             assert_eq!(found_value, value, "Should find value and it should be the correct one.");
                             println!("Found value: {}", found_value);
                         }

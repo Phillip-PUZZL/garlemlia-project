@@ -1,6 +1,6 @@
 use crate::garlemlia::garlemlia;
 use crate::garlemlia_structs::garlemlia_structs;
-use crate::garlemlia_structs::garlemlia_structs::{u256_random, GarlemliaData, SerializableRoutingTable};
+use crate::garlemlia_structs::garlemlia_structs::{u256_random, CloveMessage, GarlemliaData, GarlemliaFindRequest, GarlemliaStoreRequest, SerializableRoutingTable};
 use crate::garlic_cast::garlic_cast;
 use crate::garlic_cast::garlic_cast::SerializableGarlicCast;
 use async_trait::async_trait;
@@ -25,6 +25,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use crate::file_utils::garlemlia_files::FileStorage;
+use crate::garlemlia::garlemlia::GarlemliaFunctions;
 
 lazy_static! {
     pub static ref SIM: Arc<Mutex<Simulator>> = Arc::new(Mutex::new(Simulator::new_empty()));
@@ -60,6 +61,7 @@ pub struct GarlemliaInfo {
     pub routing_table: Arc<Mutex<RoutingTable>>,
     pub data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
     pub garlic: Arc<Mutex<GarlicCast>>,
+    pub file_storage: Arc<Mutex<FileStorage>>
 }
 
 impl GarlemliaInfo {
@@ -67,13 +69,15 @@ impl GarlemliaInfo {
                 message_handler: Arc<Box<dyn GMessage>>,
                 routing_table: Arc<Mutex<RoutingTable>>,
                 data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
-                garlic: Arc<Mutex<GarlicCast>>) -> GarlemliaInfo {
+                garlic: Arc<Mutex<GarlicCast>>,
+                file_storage: Arc<Mutex<FileStorage>>) -> GarlemliaInfo {
         GarlemliaInfo {
             node,
             message_handler,
             routing_table,
             data_store,
-            garlic
+            garlic,
+            file_storage
         }
     }
 
@@ -83,6 +87,7 @@ impl GarlemliaInfo {
         self.routing_table = Arc::clone(&garlemlia.routing_table);
         self.data_store = Arc::clone(&garlemlia.data_store);
         self.garlic = Arc::clone(&garlemlia.garlic);
+        self.file_storage = Arc::clone(&garlemlia.file_storage);
     }
 }
 
@@ -219,7 +224,7 @@ impl SimulatedNode {
 
     async fn parse_message(&mut self, sender_node: Node, msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
         if self.is_online {
-            return parse_message_generic(self.routing_table.clone(), self.data_store.clone(), self.garlic.clone(), sender_node, self.node.clone(), msg).await;
+            return parse_message_generic(self.routing_table.clone(), self.data_store.clone(), self.garlic.clone(), self.file_storage.clone(), sender_node, self.node.clone(), msg).await;
         }
         Err(Some(MessageError::Timeout))
     }
@@ -254,9 +259,11 @@ async fn add_to_routing_table(routing_table: Arc<Mutex<RoutingTable>>, node: Nod
 async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                                data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
                                garlic_cast: Arc<Mutex<GarlicCast>>,
+                               file_storage: Arc<Mutex<FileStorage>>,
                                sender_node: Node,
                                self_node: Node,
                                msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
+    let message_handler = Arc::new(simulated_to_gmessage(self_node.address));
     match msg {
         GarlemliaMessage::FindNode { id, .. } => {
             // Add the sender to the routing table
@@ -287,20 +294,86 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
 
         // Store a key-value pair
         GarlemliaMessage::Store { key, value, .. } => {
-            add_to_routing_table(routing_table.clone(), sender_node).await;
-            data_store.lock().await.insert(key, value);
+            add_to_routing_table(routing_table.clone(), sender_node.clone()).await;
+
+            let mut store_val = None;
+            if value.is_validator() {
+                let current;
+                {
+                    current = data_store.lock().await.get(&key).cloned();
+                }
+
+                if current.is_some() {
+                    let stored_data = current.unwrap();
+                    match stored_data {
+                        GarlemliaData::Validator { id, proxy_ids, proxies } => {
+                            let this_proxy_id = value.validator_get_proxy_id().unwrap();
+                            let mut new_ids = proxy_ids;
+                            new_ids.push(this_proxy_id);
+                            let mut new_proxies = proxies;
+                            new_proxies.insert(this_proxy_id, sender_node.clone().address);
+                            store_val = Some(GarlemliaData::Validator {
+                                id,
+                                proxy_ids: new_ids,
+                                proxies: new_proxies
+                            });
+                        }
+                        _ => {
+                            store_val = None;
+                        }
+                    }
+                } else {
+                    let this_proxy_id = value.validator_get_proxy_id().unwrap();
+                    let mut set_proxies = HashMap::new();
+                    set_proxies.insert(this_proxy_id, sender_node.clone().address);
+
+                    store_val = Some(GarlemliaData::Validator {
+                        id: key,
+                        proxy_ids: vec![this_proxy_id],
+                        proxies: set_proxies
+                    });
+                }
+            } else {
+                store_val = value.to_store_data();
+            }
+
+            if value.is_chunk() {
+                let _ = file_storage.lock().await.store_chunk(key, value.chunk_get_data().unwrap()).await;
+            }
+
+            if store_val.is_some() {
+                data_store.lock().await.insert(key, store_val.clone().unwrap());
+            }
+
             Err(None)
         }
 
         // Use find_closest_nodes() if value is not found
-        GarlemliaMessage::FindValue { key, .. } => {
+        GarlemliaMessage::FindValue { request, .. } => {
+            let key = request.get_id();
+
             add_to_routing_table(routing_table.clone(), sender_node).await;
-            let value = data_store.lock().await.get(&key).cloned();
+            let value;
+            {
+                value = data_store.lock().await.get(&key).cloned();
+            }
 
             let response = if let Some(val) = value {
+                let mut val_response = val.get_response(request);
+                if val.is_chunk() {
+                    let chunk_data;
+                    {
+                        chunk_data = file_storage.lock().await.get_chunk(val.get_id()).await;
+                    }
+
+                    if chunk_data.is_ok() {
+                        val_response = val.get_chunk_response(chunk_data.unwrap());
+                    }
+                }
+
                 GarlemliaMessage::Response {
                     nodes: vec![],
-                    value: Some(val),
+                    value: val_response,
                     sender: self_node.clone(),
                 }
             } else {
@@ -331,14 +404,59 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
             Err(None)
         }
 
-        GarlemliaMessage::Garlic { msg, sender } => {
+        GarlemliaMessage::Garlic { msg, .. } => {
             add_to_routing_table(routing_table.clone(), sender_node.clone()).await;
             let sender_clone = sender_node.clone();
             let msg_clone = msg.clone();
-            let garlic = Arc::clone(&garlic_cast);
+            let self_node_clone = self_node.clone();
+            let routing_table_clone = Arc::clone(&routing_table);
+            let message_handler_clone = Arc::clone(&message_handler);
+            let data_store_clone = Arc::clone(&data_store);
+            let garlic_clone = Arc::clone(&garlic_cast);
+            let file_storage_clone = Arc::clone(&file_storage);
 
             tokio::spawn(async move {
-                let _ = garlic.lock().await.recv(sender_clone, msg_clone).await;
+                let action_res;
+                {
+                    action_res = garlic_cast.lock().await.recv(sender_clone, msg_clone).await;
+                }
+
+                if action_res.is_ok() {
+                    let action_opt = action_res.unwrap();
+                    if action_opt.is_some() {
+                        let action = action_opt.unwrap();
+
+                        match action {
+                            // TODO: Configure this to take action on whatever garlic cast returns
+                            // TODO: Then send that info back to garlic cast to process
+                            CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key } => {
+                                GarlemliaFunctions::store_value(get_global_socket().unwrap(), self_node_clone,
+                                                                routing_table_clone,
+                                                                message_handler_clone,
+                                                                data_store_clone,
+                                                                garlic_clone,
+                                                                file_storage_clone,
+                                                                GarlemliaStoreRequest::Validator { id: request_id, proxy_id },
+                                                                3).await;
+                            }
+                            CloveMessage::SearchGarlemlia { request_id, key, public_key } => {
+                                let response_data = GarlemliaFunctions::iterative_find_value(get_global_socket().unwrap(), self_node_clone,
+                                                                                             routing_table_clone,
+                                                                                             message_handler_clone,
+                                                                                             data_store_clone,
+                                                                                             GarlemliaFindRequest::Key { id: key }).await;
+                            }
+                            CloveMessage::ResponseWithValidator { request_id, proxy_id, data, public_key } => {
+                                let response_data = GarlemliaFunctions::iterative_find_value(get_global_socket().unwrap(), self_node_clone,
+                                                                                             routing_table_clone,
+                                                                                             message_handler_clone,
+                                                                                             data_store_clone,
+                                                                                             GarlemliaFindRequest::Validator { id: request_id, proxy_id }).await;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             });
 
             match msg {
@@ -375,7 +493,7 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
 async fn parse_message_running(garl: Arc<Mutex<GarlemliaInfo>>, sender_node: Node, msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
     let garlemlia = garl.lock().await;
     let node = garlemlia.node.lock().await.clone();
-    parse_message_generic(garlemlia.routing_table.clone(), garlemlia.data_store.clone(), garlemlia.garlic.clone(), sender_node, node.clone(), msg).await
+    parse_message_generic(garlemlia.routing_table.clone(), garlemlia.data_store.clone(), garlemlia.garlic.clone(), garlemlia.file_storage.clone(), sender_node, node.clone(), msg).await
 }
 
 pub fn simulated_to_gmessage(local_addr: SocketAddr) -> Box<dyn GMessage> {
@@ -869,7 +987,7 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>, mut keys: Vec<KeyFile
 
         let mut run_node = Garlemlia::new_with_details(node.node.id, "127.0.0.1", node.node.address.port(), RoutingTable::new(node.node.clone()), simulated_to_gmessage(node.node.address), get_global_socket().unwrap().clone(), pub_k, priv_k, Box::new(Path::new("./simulated_nodes_files"))).await;
 
-        add_running(node.node.clone(), GarlemliaInfo::from(Arc::clone(&run_node.node), Arc::clone(&run_node.message_handler), Arc::clone(&run_node.routing_table), Arc::clone(&run_node.data_store), Arc::clone(&run_node.garlic))).await;
+        add_running(node.node.clone(), GarlemliaInfo::from(Arc::clone(&run_node.node), Arc::clone(&run_node.message_handler), Arc::clone(&run_node.routing_table), Arc::clone(&run_node.data_store), Arc::clone(&run_node.garlic), Arc::clone(&run_node.file_storage))).await;
 
         let ind;
         if index ^ (range * 2) == 0 {

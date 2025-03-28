@@ -1,3 +1,4 @@
+use crate::time_hash::time_based_hash::{HashLocation, RotatingHash};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use primitive_types::U256;
@@ -12,7 +13,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, Mutex};
 use tokio::time::{timeout, Duration};
-use crate::time_hash::time_based_hash::RotatingHash;
 
 pub fn u256_random() -> U256 {
     let mut rng = rng();
@@ -705,25 +705,238 @@ pub struct ChunkInfo {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaData {
     Value { id: U256, value: String },
-    ValueResponse { value: String },
     Validator { id: U256, proxy_ids: Vec<U256>, proxies: HashMap<U256, SocketAddr> },
-    ValidatorResponse { proxy: SocketAddr },
     FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: RotatingHash, key_location: RotatingHash },
-    FileNameResponse { name: String, file_type: String, size: usize, categories: Vec<String> },
     MetaData { id: U256, file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
-    MetaDataResponse { file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
     FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location: RotatingHash },
-    FileKeyResponse { enc_file_id: U256, decryption_key: String },
-    FileChunk { id: U256 },
-    FileChunkResponse { chunk_size: usize, data: Vec<u8> }
+    FileChunk { id: U256, size: usize }
+}
+
+impl GarlemliaData {
+    pub fn get_id(&self) -> U256 {
+        match self {
+            GarlemliaData::Value { id, .. } => *id,
+            GarlemliaData::Validator { id, .. } => *id,
+            GarlemliaData::FileName { id, .. } => *id,
+            GarlemliaData::MetaData { id, .. } => *id,
+            GarlemliaData::FileKey { id, .. } => *id,
+            GarlemliaData::FileChunk { id, .. } => *id,
+        }
+    }
+
+    pub fn get_response(&self, request: GarlemliaFindRequest) -> Option<GarlemliaResponse> {
+        match self {
+            GarlemliaData::Value { value, .. } => {
+                Some(GarlemliaResponse::Value {
+                    value: value.to_string()
+                })
+            }
+            GarlemliaData::Validator { proxy_ids, proxies, .. } => {
+                let mut res = GarlemliaResponse::Validator {
+                    proxy: None
+                };
+
+                match request {
+                    GarlemliaFindRequest::Validator { proxy_id, .. } => {
+                        let mut ids = proxy_ids.clone();
+                        while ids.len() > 0 {
+                            let check_id = ids.remove(rand::random_range(0..ids.len()));
+
+                            if check_id != proxy_id {
+                                res = GarlemliaResponse::Validator {
+                                    proxy: proxies.get(&check_id).cloned()
+                                };
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                Some(res)
+            }
+            GarlemliaData::FileName { name, file_type, size, categories, metadata_location, key_location, .. } => {
+                Some(GarlemliaResponse::FileName {
+                    name: name.clone(),
+                    file_type: file_type.clone(),
+                    size: size.clone(),
+                    categories: categories.clone(),
+                    metadata_location: metadata_location.get_next(24, 1.0).unwrap(),
+                    key_location: key_location.get_next(24, 1.0).unwrap()
+                })
+            }
+            GarlemliaData::MetaData { file_id, chunk_info, downloads, availability, .. } => {
+                Some(GarlemliaResponse::MetaData {
+                    file_id: file_id.clone(),
+                    chunk_info: chunk_info.clone(),
+                    downloads: downloads.clone(),
+                    availability: availability.clone()
+                })
+            }
+            GarlemliaData::FileKey { enc_file_id, decryption_key, .. } => {
+                Some(GarlemliaResponse::FileKey {
+                    enc_file_id: enc_file_id.clone(),
+                    decryption_key: decryption_key.clone()
+                })
+            }
+            _ => {
+                None
+            }
+        }
+    }
+
+    pub fn get_chunk_response(&self, data: Vec<u8>) -> Option<GarlemliaResponse> {
+        match self {
+            GarlemliaData::FileChunk { id, size } => {
+                Some(GarlemliaResponse::FileChunk {
+                    chunk_id: id.clone(),
+                    chunk_size: size.clone(),
+                    data,
+                })
+            },
+            _ => None
+        }
+    }
+
+    pub fn is_chunk(&self) -> bool {
+        match self {
+            GarlemliaData::FileChunk { .. } => true,
+            _ => false
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum GarlemliaStoreRequest {
+    Value { id: U256, value: String },
+    Validator { id: U256, proxy_id: U256 },
+    FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: RotatingHash, key_location: RotatingHash },
+    MetaData { id: U256, file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
+    FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location: RotatingHash },
+    FileChunk { id: U256, chunk_size: usize, data: Vec<u8> }
+}
+
+impl GarlemliaStoreRequest {
+    pub fn get_id(&self) -> U256 {
+        match self {
+            GarlemliaStoreRequest::Value { id, .. } => *id,
+            GarlemliaStoreRequest::Validator { id, .. } => *id,
+            GarlemliaStoreRequest::FileName { id, .. } => *id,
+            GarlemliaStoreRequest::MetaData { id, .. } => *id,
+            GarlemliaStoreRequest::FileKey { id, .. } => *id,
+            GarlemliaStoreRequest::FileChunk { id, .. } => *id,
+        }
+    }
+
+    pub fn to_store_data(&self) -> Option<GarlemliaData> {
+        match self {
+            GarlemliaStoreRequest::Value { id, value } => {
+                Some(GarlemliaData::Value {
+                    id: id.clone(),
+                    value: value.to_string()
+                })
+            }
+            GarlemliaStoreRequest::FileName { id, name, file_type, size, categories, metadata_location, key_location } => {
+                Some(GarlemliaData::FileName {
+                    id: id.clone(),
+                    name: name.clone(),
+                    file_type: file_type.clone(),
+                    size: size.clone(),
+                    categories: categories.clone(),
+                    metadata_location: metadata_location.clone(),
+                    key_location: key_location.clone()
+                })
+            }
+            GarlemliaStoreRequest::MetaData { id, file_id, chunk_info, downloads, availability, metadata_location } => {
+                Some(GarlemliaData::MetaData {
+                    id: id.clone(),
+                    file_id: file_id.clone(),
+                    chunk_info: chunk_info.clone(),
+                    downloads: downloads.clone(),
+                    availability: availability.clone(),
+                    metadata_location: metadata_location.clone()
+                })
+            }
+            GarlemliaStoreRequest::FileKey { id, enc_file_id, decryption_key, key_location } => {
+                Some(GarlemliaData::FileKey {
+                    id: id.clone(),
+                    enc_file_id: enc_file_id.clone(),
+                    decryption_key: decryption_key.clone(),
+                    key_location: key_location.clone()
+                })
+            }
+            GarlemliaStoreRequest::FileChunk { id, chunk_size, .. } => {
+                Some(GarlemliaData::FileChunk {
+                    id: id.clone(),
+                    size: chunk_size.clone()
+                })
+            }
+            _ => {
+                None
+            }
+        }
+    }
+
+    pub fn validator_get_proxy_id(&self) -> Option<U256> {
+        match self {
+            GarlemliaStoreRequest::Validator { proxy_id, .. } => Some(*proxy_id),
+            _ => None
+        }
+    }
+
+    pub fn is_validator(&self) -> bool {
+        match self {
+            GarlemliaStoreRequest::Validator { .. } => true,
+            _ => false
+        }
+    }
+
+    pub fn chunk_get_data(&self) -> Option<Vec<u8>> {
+        match self {
+            GarlemliaStoreRequest::FileChunk { data, .. } => Some(data.clone()),
+            _ => None
+        }
+    }
+
+    pub fn is_chunk(&self) -> bool {
+        match self {
+            GarlemliaStoreRequest::FileChunk { .. } => true,
+            _ => false
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum GarlemliaFindRequest {
+    Key { id: U256 },
+    Validator { id: U256, proxy_id: U256 }
+}
+
+impl GarlemliaFindRequest {
+    pub fn get_id(&self) -> U256 {
+        match self {
+            GarlemliaFindRequest::Key { id } => *id,
+            GarlemliaFindRequest::Validator { id, .. } => *id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum GarlemliaResponse {
+    Value { value: String },
+    Validator { proxy: Option<SocketAddr> },
+    FileName { name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: Vec<HashLocation>, key_location: Vec<HashLocation> },
+    MetaData { file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
+    FileKey { enc_file_id: U256, decryption_key: String },
+    FileChunk { chunk_id: U256, chunk_size: usize, data: Vec<u8> }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaMessage {
     FindNode { id: U256, sender: Node },
-    Store { key: U256, value: GarlemliaData, sender: Node },
-    FindValue { key: U256, sender: Node },
-    Response { nodes: Vec<Node>, value: Option<GarlemliaData>, sender: Node },
+    Store { key: U256, value: GarlemliaStoreRequest, sender: Node },
+    FindValue { request: GarlemliaFindRequest, sender: Node },
+    Response { nodes: Vec<Node>, value: Option<GarlemliaResponse>, sender: Node },
     Garlic { msg: GarlicMessage, sender: Node },
     Ping { sender: Node },
     Pong { sender: Node },

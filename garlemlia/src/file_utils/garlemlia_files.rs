@@ -305,6 +305,28 @@ impl FileStorage {
         }
     }
 
+    pub async fn store_chunk(&self, id: U256, data: Vec<u8>) -> std::io::Result<bool> {
+        let chunk_path = Path::new(&self.chunk_data_path).join(hex::encode(id.to_big_endian()));
+
+        {
+            let mut chunk_file = File::create(&chunk_path).await?;
+            chunk_file.write_all(&data).await?;
+        }
+
+        Ok(true)
+    }
+
+    pub async fn get_chunk(&self, id: U256) -> std::io::Result<Vec<u8>> {
+        let chunk_path = Path::new(&self.chunk_data_path).join(hex::encode(id.to_big_endian()));
+
+        let mut chunk_file = File::open(&chunk_path).await?;
+
+        let mut chunk_data = Vec::new();
+        chunk_file.read_to_end(&mut chunk_data).await?;
+
+        Ok(chunk_data)
+    }
+
     pub async fn load(file_storage_file: String) -> Result<FileStorage, Box<dyn std::error::Error>> {
         let mut file = File::open(file_storage_file).await?;
         let mut contents = String::new();

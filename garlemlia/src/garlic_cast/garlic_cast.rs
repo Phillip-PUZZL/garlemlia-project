@@ -1983,6 +1983,12 @@ impl GarlicCast {
         }
     }
 
+    // This gets called from Kademlia after it finishes processing potential
+    // validator pool creations or searches
+    pub async fn run_proxy_message(&self, req: CloveMessage) {
+
+    }
+
     pub async fn recv(&self, node: Node, garlic_msg: GarlicMessage) -> Result<Option<CloveMessage>, MessageError> {
         let socket = Arc::clone(&self.socket);
         match garlic_msg.clone() {

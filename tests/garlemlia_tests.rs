@@ -1,5 +1,5 @@
 use garlemlia::garlemlia::garlemlia::Garlemlia;
-use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, GarlemliaData, GarlemliaMessageHandler, Node, RoutingTable, DEFAULT_K};
+use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, GarlemliaData, GarlemliaFindRequest, GarlemliaMessageHandler, GarlemliaResponse, GarlemliaStoreRequest, Node, RoutingTable, DEFAULT_K};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -161,11 +161,11 @@ async fn test_iterative_find_value() {
     sleep(Duration::from_secs(1)).await;
 
     // Store a value in node1
-    node1.store_value(Arc::clone(&node1.socket), U256::from(2), GarlemliaData::Value { id: U256::from(2), value: "Hello, world!".to_string() }).await;
+    node1.store_value(Arc::clone(&node1.socket), GarlemliaStoreRequest::Value { id: U256::from(2), value: "Hello, world!".to_string() }, 2).await;
     sleep(Duration::from_secs(1)).await;
 
     // Attempt to retrieve the stored value from node4
-    let value = node4.iterative_find_value(Arc::clone(&node4.socket), U256::from(2)).await;
+    let value = node4.iterative_find_value(Arc::clone(&node4.socket), GarlemliaFindRequest::Key { id: U256::from(2) }).await;
 
     node1.stop().await;
     node2.stop().await;
@@ -175,7 +175,7 @@ async fn test_iterative_find_value() {
     match value {
         Some(value) => {
             match value {
-                GarlemliaData::Value { id: _, value } => {
+                GarlemliaResponse::Value { value } => {
                     assert_eq!(value, "Hello, world!".to_string(), "Value should 'Hello, World!'");
                 }
                 _ => {
