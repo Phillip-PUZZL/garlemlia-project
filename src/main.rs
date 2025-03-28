@@ -1,6 +1,7 @@
 use garlemlia::garlemlia::garlemlia::Garlemlia;
 use garlemlia::garlemlia_structs::garlemlia_structs::{u256_random, Node, RoutingTable};
-use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, remove_running, save_simulated_nodes, simulated_to_gmessage, GarlemliaInfo, SIM};
+use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, save_simulated_nodes, simulated_to_gmessage, GarlemliaInfo, SIM};
+use primitive_types::U256;
 use regex::{Match, Regex};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
@@ -8,8 +9,7 @@ use std::io::{stdin, stdout, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use primitive_types::U256;
-use tokio::{fs, time};
+use tokio::fs;
 
 async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
@@ -22,67 +22,6 @@ async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic), Arc::clone(&node.file_storage))).await;
 
     node
-}
-
-async fn check_node_discover() {
-    init_socket_once().await;
-    let file_path = "./test_nodes.json";
-
-    // Load nodes from JSON
-    match load_simulated_nodes(file_path).await {
-        Ok(nodes) => {
-
-            {
-                SIM.lock().await.set_nodes(nodes.clone());
-            }
-
-            let mut node1 = create_test_node(u256_random(), 6000).await;
-
-            {
-                println!("NODE1:\nID: {}", node1.node.lock().await.id);
-            }
-
-            let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % nodes.len() as u16));
-
-            println!("NODE1 BOOTSTRAP IP: 127.0.0.1:{}", test_node_sock1.clone().port());
-
-            node1.join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
-
-            println!("Node1 Joined Network");
-
-            {
-                node1.garlic.lock().await.discover_proxies(60).await;
-            }
-
-            tokio::time::sleep(time::Duration::from_secs(3)).await;
-
-            /*{
-                node1.garlic.lock().await.send_search_overlay("HOWDY PARDNER".to_string(), 3).await;
-            }*/
-
-            tokio::time::sleep(time::Duration::from_secs(2)).await;
-
-            remove_running(node1.node.lock().await.clone()).await;
-
-            let mut updated_nodes = nodes.clone();
-            {
-                let sim = SIM.lock().await;
-                updated_nodes = sim.get_all_nodes().await;
-            }
-
-            // Save the modified nodes back to a new file
-            let new_file_path = "./test_nodes_stored.json";
-            if let Err(e) = save_simulated_nodes(new_file_path, &updated_nodes).await {
-                eprintln!("Error saving nodes: {}", e);
-            } else {
-                println!("Saved updated nodes to {}", new_file_path);
-            }
-        }
-        Err(e) => {
-            eprintln!("Error loading nodes: {}", e);
-            assert!(false, "Could not load nodes");
-        },
-    }
 }
 
 async fn create_test_nodes() {

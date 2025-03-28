@@ -1,10 +1,10 @@
 use garlemlia::garlemlia::garlemlia::Garlemlia;
-use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, GarlemliaData, GarlemliaFindRequest, GarlemliaMessageHandler, GarlemliaResponse, GarlemliaStoreRequest, Node, RoutingTable, DEFAULT_K};
+use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, GarlemliaFindRequest, GarlemliaMessageHandler, GarlemliaResponse, GarlemliaStoreRequest, Node, RoutingTable, DEFAULT_K};
+use primitive_types::U256;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use primitive_types::U256;
 use tokio::time::sleep;
 
 async fn create_test_node(id: U256, port: u16) -> Garlemlia {
