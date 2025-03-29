@@ -430,7 +430,7 @@ impl SerializableInitiatorRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct InitiatorRequest {
     request_id: U256,
     validator_required: bool,
@@ -496,7 +496,7 @@ impl SerializableProxyRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProxyRequest {
     sequence_number: U256,
     request_id: U256,
@@ -1967,15 +1967,18 @@ impl GarlicCast {
             CloveMessage::SearchGarlemlia { .. } => {
                 Some(req)
             }
-            CloveMessage::ResponseDirect { request_id, address, data, public_key } => {
-                // No Kademlia functions needed
-                None
-            }
             CloveMessage::ResponseWithValidator { .. } => {
                 // This only gets sent to the proxy of the responder to a request
                 // The responder proxy uses ResponseDirect when sending the response
                 // to the proxy of the initiator
                 Some(req)
+            }
+            CloveMessage::Store { .. } => {
+                Some(req)
+            }
+            CloveMessage::ResponseDirect { request_id, address, data, public_key } => {
+                // No Kademlia functions needed
+                None
             }
             _ => {
                 None

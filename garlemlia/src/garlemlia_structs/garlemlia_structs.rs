@@ -1012,7 +1012,7 @@ pub struct CloveNode {
     pub node: Node
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum CloveMessage {
     RequestProxy {
         msg: String,
@@ -1021,6 +1021,10 @@ pub enum CloveMessage {
     ProxyInfo {
         public_key: String,
         starting_hops: u16
+    },
+    Store {
+        request_id: U256,
+        data: GarlemliaStoreRequest
     },
     SearchOverlay {
         request_id: U256,
@@ -1052,6 +1056,7 @@ impl CloveMessage {
         match self {
             CloveMessage::RequestProxy { .. } => {U256::from(0)}
             CloveMessage::ProxyInfo { .. } => {U256::from(0)}
+            CloveMessage::Store { request_id, .. } => {request_id.clone()}
             CloveMessage::SearchOverlay { request_id, .. } => {request_id.clone()}
             CloveMessage::SearchGarlemlia { request_id, .. } => {request_id.clone()}
             CloveMessage::ResponseDirect { request_id, .. } => {request_id.clone()}
@@ -1063,6 +1068,7 @@ impl CloveMessage {
         match self {
             CloveMessage::RequestProxy { .. } => {None}
             CloveMessage::ProxyInfo { .. } => {None}
+            CloveMessage::Store { .. } => {None}
             CloveMessage::SearchOverlay { proxy_id, .. } => {Some(proxy_id.clone())}
             CloveMessage::SearchGarlemlia { .. } => {None}
             CloveMessage::ResponseDirect { .. } => {None}
@@ -1074,6 +1080,7 @@ impl CloveMessage {
         match self {
             CloveMessage::RequestProxy { .. } => {false}
             CloveMessage::ProxyInfo { .. } => {false}
+            CloveMessage::Store { .. } => {true}
             CloveMessage::SearchOverlay { .. } => {true}
             CloveMessage::SearchGarlemlia { .. } => {true}
             CloveMessage::ResponseDirect { .. } => {true}

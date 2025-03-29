@@ -453,6 +453,16 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                                                                                              data_store_clone,
                                                                                              GarlemliaFindRequest::Validator { id: request_id, proxy_id }).await;
                             }
+                            CloveMessage::Store { data, .. } => {
+                                GarlemliaFunctions::store_value(get_global_socket().unwrap(), self_node_clone,
+                                                                routing_table_clone,
+                                                                message_handler_clone,
+                                                                data_store_clone,
+                                                                garlic_clone,
+                                                                file_storage_clone,
+                                                                data,
+                                                                3).await;
+                            }
                             _ => {}
                         }
                     }
