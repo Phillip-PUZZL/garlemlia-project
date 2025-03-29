@@ -241,7 +241,7 @@ async fn add_to_routing_table(routing_table: Arc<Mutex<RoutingTable>>, node: Nod
         let mut locked_buckets = rt.buckets().await;
         let bucket = locked_buckets.get_mut(&index).unwrap();
         if let Some(lru_node) = bucket.nodes.front().cloned() {
-            let mut is_alive = false;
+            let is_alive;
             {
                 is_alive = SIM.lock().await.node_is_alive(lru_node.address).await;
             }
@@ -296,7 +296,7 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
         GarlemliaMessage::Store { key, value, .. } => {
             add_to_routing_table(routing_table.clone(), sender_node.clone()).await;
 
-            let mut store_val = None;
+            let store_val;
             if value.is_validator() {
                 let current;
                 {
@@ -988,11 +988,6 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>, mut keys: Vec<KeyFile
                 println!("PRIVATE KEY ERROR: {:?}", e);
                 continue;
             }
-        }
-
-        let node_fs;
-        {
-            node_fs = node.file_storage.lock().await.clone();
         }
 
         let mut run_node = Garlemlia::new_with_details(node.node.id, "127.0.0.1", node.node.address.port(), RoutingTable::new(node.node.clone()), simulated_to_gmessage(node.node.address), get_global_socket().unwrap().clone(), pub_k, priv_k, Box::new(Path::new("./simulated_nodes_files"))).await;

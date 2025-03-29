@@ -297,7 +297,7 @@ impl GarlemliaFunctions {
 
         for node in closest_nodes.clone() {
             if node.id == self_node.id {
-                let mut store_val = request.to_store_data();
+                let store_val = request.to_store_data();
 
                 if request.is_chunk() {
                     let _ = file_storage.lock().await.store_chunk(request.get_id(), request.chunk_get_data().unwrap()).await;
@@ -521,7 +521,7 @@ impl Garlemlia {
                         GarlemliaMessage::Store { key, value, .. } => {
                             routing_table.lock().await.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
 
-                            let mut store_val = None;
+                            let store_val;
                             if value.is_validator() {
                                 let current;
                                 {
