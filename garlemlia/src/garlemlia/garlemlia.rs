@@ -154,7 +154,7 @@ impl GarlemliaFunctions {
         let local = data_store.lock().await.get(&key).cloned();
         match local {
             Some(val) => {
-                return val.get_response(request);
+                return val.get_response(Some(request));
             }
             _ => {}
         }
@@ -298,10 +298,17 @@ impl GarlemliaFunctions {
 
         for node in closest_nodes.clone() {
             if node.id == self_node.id {
-                let store_val = request.to_store_data();
+                let mut store_val = request.to_store_data();
 
                 if request.is_chunk() {
                     let _ = file_storage.lock().await.store_chunk(request.get_id(), request.chunk_get_data().unwrap()).await;
+                }
+                
+                if store_val.is_some() {
+                    let mut check = store_val.unwrap();
+                    check.store();
+                    
+                    store_val = Some(check);
                 }
 
                 // Store the value locally if this node is among the closest
@@ -328,6 +335,28 @@ impl GarlemliaFunctions {
         }
 
         closest_nodes
+    }
+
+    pub async fn search_file(data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>, file_name: String) -> Option<GarlemliaResponse> {
+        let mut response = None;
+        
+        let ds = data_store.lock().await;
+        
+        for item in ds.iter() {
+            let g_data = item.1.clone();
+            
+            match g_data.clone() {
+                GarlemliaData::FileName { name, .. } => {
+                    if file_name == name {
+                        response = g_data.get_response(None);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        response
     }
 }
 
@@ -522,7 +551,7 @@ impl Garlemlia {
                         GarlemliaMessage::Store { key, value, .. } => {
                             routing_table.lock().await.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
 
-                            let store_val;
+                            let mut store_val;
                             if value.is_validator() {
                                 let current;
                                 {
@@ -563,6 +592,13 @@ impl Garlemlia {
                                 store_val = value.to_store_data();
                             }
 
+                            if store_val.is_some() {
+                                let mut check = store_val.unwrap();
+                                check.store();
+
+                                store_val = Some(check);
+                            }
+
                             if value.is_chunk() {
                                 let _ = file_storage.lock().await.store_chunk(key, value.chunk_get_data().unwrap()).await;
                             }
@@ -581,7 +617,7 @@ impl Garlemlia {
                             let value = data_store.lock().await.get(&key).cloned();
 
                             let response = if let Some(val) = value {
-                                let mut val_response = val.get_response(request);
+                                let mut val_response = val.get_response(Some(request));
                                 if val.is_chunk() {
                                     let chunk_data = file_storage.lock().await.get_chunk(val.get_id()).await;
 
@@ -645,7 +681,7 @@ impl Garlemlia {
 
                                     let mut response_data = None;
                                     match action.clone() {
-                                        CloveMessage::SearchOverlay { request_id, proxy_id, .. } => {
+                                        CloveMessage::SearchOverlay { request_id, proxy_id, search_term, .. } => {
                                             let yeet_node;
                                             {
                                                 yeet_node = self_node.lock().await.clone();
@@ -658,6 +694,8 @@ impl Garlemlia {
                                                                             Arc::clone(&file_storage),
                                                                             GarlemliaStoreRequest::Validator { id: request_id.request_id, proxy_id },
                                                                             3).await;
+
+                                            response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
                                         }
                                         CloveMessage::SearchGarlemlia { key, .. } => {
                                             let yeet_node;
@@ -722,10 +760,16 @@ impl Garlemlia {
                             }
                         }
 
-                        GarlemliaMessage::SearchFile { search_id, proxy_id, search_term, sender } => {
+                        GarlemliaMessage::SearchFile { request_id, proxy_id, search_term, public_key, .. } => {
                             let mut rt = routing_table.lock().await;
                             rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
-                            // TODO: Search data store for file names which are close to the search_term
+                            let response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
+                            
+                            let new_clove_msg = CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key };
+
+                            {
+                                garlic.lock().await.run_proxy_message(new_clove_msg, response_data).await;
+                            }
                         }
 
                         GarlemliaMessage::AgreeAlt { alt_sequence_number, sender } => {

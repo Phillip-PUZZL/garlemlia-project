@@ -725,7 +725,54 @@ impl GarlemliaData {
         }
     }
 
-    pub fn get_response(&self, request: GarlemliaFindRequest) -> Option<GarlemliaResponse> {
+    pub fn store(&mut self) {
+        match self {
+            GarlemliaData::FileName { id, name, file_type, size, categories, metadata_location, key_location } => {
+                let mut m_loc = metadata_location.clone();
+                m_loc.store();
+                
+                let mut k_loc = key_location.clone();
+                k_loc.store();
+                
+                *self = GarlemliaData::FileName {
+                    id: id.clone(),
+                    name: name.clone(),
+                    file_type: file_type.clone(),
+                    size: size.clone(),
+                    categories: categories.clone(),
+                    metadata_location: m_loc,
+                    key_location: k_loc
+                };
+            }
+            GarlemliaData::MetaData { id, file_id, chunk_info, downloads, availability, metadata_location } => {
+                let mut m_loc = metadata_location.clone();
+                m_loc.store();
+
+                *self = GarlemliaData::MetaData {
+                    id: id.clone(),
+                    file_id: file_id.clone(),
+                    chunk_info: chunk_info.clone(),
+                    downloads: downloads.clone(),
+                    availability: availability.clone(),
+                    metadata_location: m_loc
+                };
+            }
+            GarlemliaData::FileKey { id, enc_file_id, decryption_key, key_location } => {
+                let mut k_loc = key_location.clone();
+                k_loc.store();
+
+                *self = GarlemliaData::FileKey {
+                    id: id.clone(),
+                    enc_file_id: enc_file_id.clone(),
+                    decryption_key: decryption_key.clone(),
+                    key_location: k_loc
+                };
+            }
+            _ => {}
+        }
+    }
+
+    pub fn get_response(&self, request: Option<GarlemliaFindRequest>) -> Option<GarlemliaResponse> {
         match self {
             GarlemliaData::Value { value, .. } => {
                 Some(GarlemliaResponse::Value {
@@ -737,7 +784,11 @@ impl GarlemliaData {
                     proxy: None
                 };
 
-                match request {
+                if request.is_none() {
+                    return None;
+                }
+                
+                match request.unwrap() {
                     GarlemliaFindRequest::Validator { proxy_id, .. } => {
                         let mut ids = proxy_ids.clone();
                         while ids.len() > 0 {
@@ -941,7 +992,7 @@ pub enum GarlemliaMessage {
     Garlic { msg: GarlicMessage, sender: Node },
     Ping { sender: Node },
     Pong { sender: Node },
-    SearchFile { search_id: U256, proxy_id: U256, search_term: String, sender: Node },
+    SearchFile { request_id: CloveRequestID, proxy_id: U256, search_term: String, public_key: String, sender: Node },
     AgreeAlt { alt_sequence_number: U256, sender: Node },
     Stop { }
 }
