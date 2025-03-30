@@ -286,11 +286,10 @@ impl FileInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileStorage {
     pub file_storage_settings_path: String,
-    downloads_path: String,
-    chunk_data_path: String,
-    temp_chunk_data_path: String,
-    downloads: Vec<FileInfo>,
-    chunk_names: Vec<String>
+    pub downloads_path: String,
+    pub chunk_data_path: String,
+    pub temp_chunk_data_path: String,
+    downloads: Vec<FileInfo>
 }
 
 impl FileStorage {
@@ -300,8 +299,7 @@ impl FileStorage {
             downloads_path,
             chunk_data_path,
             temp_chunk_data_path,
-            downloads: Vec::new(),
-            chunk_names: Vec::new()
+            downloads: Vec::new()
         }
     }
 
@@ -318,6 +316,17 @@ impl FileStorage {
 
     pub async fn get_chunk(&self, id: U256) -> std::io::Result<Vec<u8>> {
         let chunk_path = Path::new(&self.chunk_data_path).join(hex::encode(id.to_big_endian()));
+
+        let mut chunk_file = File::open(&chunk_path).await?;
+
+        let mut chunk_data = Vec::new();
+        chunk_file.read_to_end(&mut chunk_data).await?;
+
+        Ok(chunk_data)
+    }
+
+    pub async fn get_temp_chunk(&self, id: U256) -> std::io::Result<Vec<u8>> {
+        let chunk_path = Path::new(&self.temp_chunk_data_path).join(hex::encode(id.to_big_endian()));
 
         let mut chunk_file = File::open(&chunk_path).await?;
 

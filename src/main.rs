@@ -10,6 +10,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::fs;
+use tokio::fs::File;
+use garlemlia::file_utils::garlemlia_files::FileUpload;
 
 async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
@@ -55,8 +57,8 @@ async fn garlemlia_console() {
     let mut proxies_show = vec![];
     let mut search_proxy_ids = vec![];
     let mut selected_search_proxies = vec![];
-    let mut download_proxy_ids = vec![];
-    let mut selected_download_proxies = vec![];
+    let mut file_proxy_ids = vec![];
+    let mut selected_file_proxies = vec![];
 
     let mut selected: usize = usize::MAX;
 
@@ -89,7 +91,7 @@ async fn garlemlia_console() {
                 if selected_search_proxies.contains(&proxies_show[i]) {
                     print!("* ");
                 }
-                if selected_download_proxies.contains(&proxies_show[i]) {
+                if selected_file_proxies.contains(&proxies_show[i]) {
                     print!("+ ");
                 }
                 let now_proxy = proxies_show[i].clone();
@@ -117,11 +119,11 @@ async fn garlemlia_console() {
             // Find all digit sequences, collect them into a Vec
             let numbers: Vec<usize> = re.find_iter(&*s).map(|m| m.as_str().parse::<usize>().unwrap()).collect();
 
-            selected_download_proxies.clear();
-            download_proxy_ids.clear();
+            selected_file_proxies.clear();
+            file_proxy_ids.clear();
             for num in numbers {
-                selected_download_proxies.push(proxies_show[num].clone());
-                download_proxy_ids.push(proxies_show[num].clone().sequence_number);
+                selected_file_proxies.push(proxies_show[num].clone());
+                file_proxy_ids.push(proxies_show[num].clone().sequence_number);
             }
         }    else if s.starts_with("LOAD SIM ") {
             let re = Regex::new(r"LOAD SIM (.+)").unwrap();
@@ -212,6 +214,32 @@ async fn garlemlia_console() {
                     running_nodes[selected].garlic.lock().await.send_search_kademlia(search_proxy_ids.clone(), value).await;
                 }
             }
+        } else if s.starts_with("UPLOAD FILE ") {
+            let re = Regex::new(r"UPLOAD FILE (.+)").unwrap();
+            let result = re.captures(&*s);
+            let Some(file_info) = result else {
+                println!("NO FILE PATH GIVEN");
+                continue;
+            };
+            let file_name = file_info[1].to_string();
+            
+            let output_folder_name;
+            {
+                output_folder_name = running_nodes[selected].file_storage.lock().await.temp_chunk_data_path.clone();
+            }
+
+            let info = FileUpload::encrypt_file(Box::from(Path::new(&file_name)), Box::from(Path::new(&output_folder_name))).await.unwrap();
+
+            let encrypted_file_name = format!("{}/{}.enc", output_folder_name, file_name);
+
+            let chunks_info = FileUpload::split_into_chunks(Box::from(Path::new(&encrypted_file_name)), 8).await.unwrap();
+
+            let file_upload = FileUpload::new(info, chunks_info, 0.25);
+
+            {
+                let file_storage = running_nodes[selected].file_storage.lock().await.clone();
+                running_nodes[selected].garlic.lock().await.send_store_file(file_upload, search_proxy_ids.clone(), file_proxy_ids.clone(), file_storage).await;
+            }
         } else if s.starts_with("CONNECT SIMULATED ") {
             let re = Regex::new(r"CONNECT SIMULATED (.+)").unwrap();
             let result = re.captures(&*s);
@@ -277,32 +305,69 @@ async fn garlemlia_console() {
             let port: u16 = result.map(|m| m.as_str().parse::<u16>().unwrap()).unwrap_or(0);
 
             running_nodes.push(create_test_node(u256_random(), port).await);
-        }  else if s.starts_with("INIT TEST") {
-            match load_simulated_nodes("./test_nodes.json").await {
-                Ok(nodes) => {
-                    {
-                        SIM.lock().await.set_nodes(nodes.clone());
+        } else if s.starts_with("INIT ") {
+            if s.starts_with("INIT TEST") {
+                match load_simulated_nodes("./test_nodes.json").await {
+                    Ok(nodes) => {
+                        {
+                            SIM.lock().await.set_nodes(nodes.clone());
+                        }
+                        simulated_nodes = nodes.clone();
+                        println!("Started {} simulated nodes!", nodes.len());
                     }
-                    simulated_nodes = nodes.clone();
-                    println!("Started {} simulated nodes!", nodes.len());
+                    Err(e) => {
+                        eprintln!("Error loading nodes: {}", e);
+                        continue;
+                    },
                 }
-                Err(e) => {
-                    eprintln!("Error loading nodes: {}", e);
+
+                running_nodes.push(create_test_node(u256_random(), 6000).await);
+                selected = 0;
+                {
+                    println!("Started and selected NODE :: {}", running_nodes[selected].node.lock().await.id);
+                }
+
+                let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % simulated_nodes.len() as u16));
+
+                running_nodes[selected].join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
+                {
+                    println!("Joined network at address {} :: ROUTING TABLE :: {} ", test_node_sock1.to_string(), running_nodes[selected].routing_table.lock().await.flat_nodes().await.len());
+                }
+            } else {
+                let re = Regex::new(r"INIT (.+\.json)").unwrap();
+                let result = re.captures(&*s);
+                let Some(file_info) = result else {
+                    println!("NO PATH GIVEN");
                     continue;
-                },
-            }
+                };
+                let file_path = file_info[1].to_string();
+                
+                match load_simulated_nodes(&*file_path).await {
+                    Ok(nodes) => {
+                        {
+                            SIM.lock().await.set_nodes(nodes.clone());
+                        }
+                        simulated_nodes = nodes.clone();
+                        println!("Started {} simulated nodes!", nodes.len());
+                    }
+                    Err(e) => {
+                        eprintln!("Error loading nodes: {}", e);
+                        continue;
+                    },
+                }
 
-            running_nodes.push(create_test_node(u256_random(), 6000).await);
-            selected = 0;
-            {
-                println!("Started and selected NODE :: {}", running_nodes[selected].node.lock().await.id);
-            }
+                running_nodes.push(create_test_node(u256_random(), 6000).await);
+                selected = 0;
+                {
+                    println!("Started and selected NODE :: {}", running_nodes[selected].node.lock().await.id);
+                }
 
-            let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % simulated_nodes.len() as u16));
+                let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % simulated_nodes.len() as u16));
 
-            running_nodes[selected].join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
-            {
-                println!("Joined network at address {} :: ROUTING TABLE :: {} ", test_node_sock1.to_string(), running_nodes[selected].routing_table.lock().await.flat_nodes().await.len());
+                running_nodes[selected].join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
+                {
+                    println!("Joined network at address {} :: ROUTING TABLE :: {} ", test_node_sock1.to_string(), running_nodes[selected].routing_table.lock().await.flat_nodes().await.len());
+                }
             }
         } else if s.starts_with("QUIT") {
             break

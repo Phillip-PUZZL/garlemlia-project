@@ -16,6 +16,7 @@ use garlemlia_structs::{Node, MessageChannel, DEFAULT_K, GMessage, GarlemliaMess
 use garlic_cast::{GarlicCast};
 use crate::file_utils::garlemlia_files::FileStorage;
 use crate::garlemlia_structs::garlemlia_structs::{CloveMessage, GarlemliaData, GarlemliaFindRequest, GarlemliaResponse, GarlemliaStoreRequest};
+use crate::simulator::simulator::get_global_socket;
 
 pub struct GarlemliaFunctions {}
 
@@ -632,17 +633,19 @@ impl Garlemlia {
                         GarlemliaMessage::Garlic { msg, sender } => {
                             let mut rt = routing_table.lock().await;
                             rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
-                            let action_res = garlic.lock().await.recv(sender, msg).await;
+                            let action_res;
+                            {
+                                action_res = garlic.lock().await.recv(sender, msg).await;
+                            }
 
                             if action_res.is_ok() {
                                 let action_opt = action_res.unwrap();
                                 if action_opt.is_some() {
                                     let action = action_opt.unwrap();
 
-                                    match action {
-                                        // TODO: Configure this to take action on whatever garlic cast returns
-                                        // TODO: Then send that info back to garlic cast to process
-                                        CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key } => {
+                                    let mut response_data = None;
+                                    match action.clone() {
+                                        CloveMessage::SearchOverlay { request_id, proxy_id, .. } => {
                                             let yeet_node;
                                             {
                                                 yeet_node = self_node.lock().await.clone();
@@ -653,32 +656,50 @@ impl Garlemlia {
                                                                             Arc::clone(&data_store),
                                                                             Arc::clone(&garlic),
                                                                             Arc::clone(&file_storage),
-                                                                            GarlemliaStoreRequest::Validator { id: request_id, proxy_id },
+                                                                            GarlemliaStoreRequest::Validator { id: request_id.request_id, proxy_id },
                                                                             3).await;
                                         }
-                                        CloveMessage::SearchGarlemlia { request_id, key, public_key } => {
+                                        CloveMessage::SearchGarlemlia { key, .. } => {
                                             let yeet_node;
                                             {
                                                 yeet_node = self_node.lock().await.clone();
                                             }
-                                            let response_data = GarlemliaFunctions::iterative_find_value(Arc::clone(&socket), yeet_node,
+                                            response_data = GarlemliaFunctions::iterative_find_value(Arc::clone(&socket), yeet_node,
                                                                                                          Arc::clone(&routing_table),
                                                                                                          Arc::clone(&message_handler),
                                                                                                          Arc::clone(&data_store),
                                                                                                          GarlemliaFindRequest::Key { id: key }).await;
                                         }
-                                        CloveMessage::ResponseWithValidator { request_id, proxy_id, data, public_key } => {
+                                        CloveMessage::ResponseWithValidator { request_id, proxy_id, .. } => {
                                             let yeet_node;
                                             {
                                                 yeet_node = self_node.lock().await.clone();
                                             }
-                                            let response_data = GarlemliaFunctions::iterative_find_value(Arc::clone(&socket), yeet_node,
+                                            response_data = GarlemliaFunctions::iterative_find_value(Arc::clone(&socket), yeet_node,
                                                                                                          Arc::clone(&routing_table),
                                                                                                          Arc::clone(&message_handler),
                                                                                                          Arc::clone(&data_store),
-                                                                                                         GarlemliaFindRequest::Validator { id: request_id, proxy_id }).await;
+                                                                                                         GarlemliaFindRequest::Validator { id: request_id.request_id, proxy_id }).await;
+                                        }
+                                        CloveMessage::Store { data, .. } => {
+                                            let yeet_node;
+                                            {
+                                                yeet_node = self_node.lock().await.clone();
+                                            }
+                                            GarlemliaFunctions::store_value(get_global_socket().unwrap(), yeet_node,
+                                                                            Arc::clone(&routing_table),
+                                                                            Arc::clone(&message_handler),
+                                                                            Arc::clone(&data_store),
+                                                                            Arc::clone(&garlic),
+                                                                            Arc::clone(&file_storage),
+                                                                            data,
+                                                                            2).await;
                                         }
                                         _ => {}
+                                    }
+
+                                    {
+                                        garlic.lock().await.run_proxy_message(action, response_data).await;
                                     }
                                 }
                             }

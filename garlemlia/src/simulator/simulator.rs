@@ -339,6 +339,9 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
 
             if value.is_chunk() {
                 let _ = file_storage.lock().await.store_chunk(key, value.chunk_get_data().unwrap()).await;
+                println!("STORING FILE CHUNK ON {}", self_node.id);
+            } else {
+                println!("STORING FILE INFO ON {}", self_node.id)
             }
 
             if store_val.is_some() {
@@ -426,32 +429,33 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                     if action_opt.is_some() {
                         let action = action_opt.unwrap();
 
-                        match action {
+                        let mut response_data = None;
+                        match action.clone() {
                             // TODO: Configure this to take action on whatever garlic cast returns
                             // TODO: Then send that info back to garlic cast to process
-                            CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key } => {
+                            CloveMessage::SearchOverlay { request_id, proxy_id, .. } => {
                                 GarlemliaFunctions::store_value(get_global_socket().unwrap(), self_node_clone,
                                                                 routing_table_clone,
                                                                 message_handler_clone,
                                                                 data_store_clone,
                                                                 garlic_clone,
                                                                 file_storage_clone,
-                                                                GarlemliaStoreRequest::Validator { id: request_id, proxy_id },
+                                                                GarlemliaStoreRequest::Validator { id: request_id.request_id, proxy_id },
                                                                 3).await;
                             }
-                            CloveMessage::SearchGarlemlia { request_id, key, public_key } => {
-                                let response_data = GarlemliaFunctions::iterative_find_value(get_global_socket().unwrap(), self_node_clone,
+                            CloveMessage::SearchGarlemlia { key, .. } => {
+                                response_data = GarlemliaFunctions::iterative_find_value(get_global_socket().unwrap(), self_node_clone,
                                                                                              routing_table_clone,
                                                                                              message_handler_clone,
                                                                                              data_store_clone,
                                                                                              GarlemliaFindRequest::Key { id: key }).await;
                             }
-                            CloveMessage::ResponseWithValidator { request_id, proxy_id, data, public_key } => {
-                                let response_data = GarlemliaFunctions::iterative_find_value(get_global_socket().unwrap(), self_node_clone,
+                            CloveMessage::ResponseWithValidator { request_id, proxy_id, .. } => {
+                                response_data = GarlemliaFunctions::iterative_find_value(get_global_socket().unwrap(), self_node_clone,
                                                                                              routing_table_clone,
                                                                                              message_handler_clone,
                                                                                              data_store_clone,
-                                                                                             GarlemliaFindRequest::Validator { id: request_id, proxy_id }).await;
+                                                                                             GarlemliaFindRequest::Validator { id: request_id.request_id, proxy_id }).await;
                             }
                             CloveMessage::Store { data, .. } => {
                                 GarlemliaFunctions::store_value(get_global_socket().unwrap(), self_node_clone,
@@ -461,9 +465,13 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                                                                 garlic_clone,
                                                                 file_storage_clone,
                                                                 data,
-                                                                3).await;
+                                                                2).await;
                             }
                             _ => {}
+                        }
+
+                        {
+                            garlic_cast.lock().await.run_proxy_message(action, response_data).await;
                         }
                     }
                 }

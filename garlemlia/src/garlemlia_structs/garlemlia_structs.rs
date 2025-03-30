@@ -13,6 +13,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, Mutex};
 use tokio::time::{timeout, Duration};
+use crate::file_utils::garlemlia_files::{FileStorage, FileUpload};
 
 pub fn u256_random() -> U256 {
     let mut rng = rng();
@@ -979,10 +980,10 @@ impl GarlemliaMessage {
 
 /// GARLIC CAST STRUCTS
 
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Clove {
     pub sequence_number: U256,
-    pub request_id: U256,
+    pub request_id: CloveRequestID,
     pub msg_fragment: Vec<u8>,
     pub key_fragment: Vec<u8>,
     pub sent: DateTime<Utc>,
@@ -1012,6 +1013,27 @@ pub struct CloveNode {
     pub node: Node
 }
 
+#[derive(Clone, Debug)]
+pub struct FileCloveMessage {
+    pub is_file_chunk: bool,
+    pub message: CloveMessage
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct CloveRequestID {
+    pub request_id: U256,
+    pub index: u8
+}
+
+impl CloveRequestID {
+    pub fn new(request_id: U256, index: u8) -> CloveRequestID {
+        CloveRequestID {
+            request_id,
+            index,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum CloveMessage {
     RequestProxy {
@@ -1023,44 +1045,83 @@ pub enum CloveMessage {
         starting_hops: u16
     },
     Store {
-        request_id: U256,
+        request_id: CloveRequestID,
         data: GarlemliaStoreRequest
     },
     SearchOverlay {
-        request_id: U256,
+        request_id: CloveRequestID,
         proxy_id: U256,
         search_term: String,
         public_key: String
     },
     SearchGarlemlia {
-        request_id: U256,
+        request_id: CloveRequestID,
         key: U256,
         public_key: String
     },
-    ResponseDirect {
-        request_id: U256,
-        address: SocketAddr,
-        data: Vec<u8>,
-        public_key: String
+    Response {
+        request_id: CloveRequestID,
+        data: GarlemliaResponse
     },
     ResponseWithValidator {
-        request_id: U256,
+        request_id: CloveRequestID,
         proxy_id: U256,
-        data: Vec<u8>,
-        public_key: String
+        clove_1: Clove,
+        clove_2: Clove
     }
 }
 
 impl CloveMessage {
-    pub fn request_id(&self) -> U256 {
+    pub async fn file_upload(file_info: FileUpload, file_storage: FileStorage, request_id: Option<U256>) -> Vec<FileCloveMessage> {
+        let mut file_messages = vec![];
+
+        file_messages.push(FileCloveMessage { is_file_chunk: false, message: CloveMessage::Store { request_id: CloveRequestID::new(request_id.unwrap_or(u256_random()), 0), data: GarlemliaStoreRequest::FileName {
+            id: file_info.id,
+            name: file_info.name,
+            file_type: file_info.file_type,
+            size: file_info.size,
+            categories: file_info.categories,
+            metadata_location: file_info.metadata_location.clone(),
+            key_location: file_info.key_location.clone()
+        }}});
+        file_messages.push(FileCloveMessage { is_file_chunk: false, message: CloveMessage::Store { request_id: CloveRequestID::new(request_id.unwrap_or(u256_random()), 1), data: GarlemliaStoreRequest::MetaData {
+            id: file_info.metadata_location.get_current().unwrap().id,
+            file_id: file_info.file_id,
+            chunk_info: file_info.chunks.clone(),
+            downloads: 0,
+            availability: 1.0,
+            metadata_location: file_info.metadata_location
+        }}});
+        file_messages.push(FileCloveMessage { is_file_chunk: false, message: CloveMessage::Store { request_id: CloveRequestID::new(request_id.unwrap_or(u256_random()), 2), data: GarlemliaStoreRequest::FileKey {
+            id: file_info.key_location.get_current().unwrap().id,
+            enc_file_id: file_info.enc_file_id,
+            decryption_key: file_info.decryption_key,
+            key_location: file_info.key_location
+        }}});
+
+        let mut request_id_index = 3;
+        for chunk in file_info.chunks {
+            let chunk_data = file_storage.get_temp_chunk(chunk.chunk_id).await.unwrap();
+            file_messages.push(FileCloveMessage { is_file_chunk: true, message: CloveMessage::Store { request_id: CloveRequestID::new(request_id.unwrap_or(u256_random()), request_id_index), data: GarlemliaStoreRequest::FileChunk {
+                id: chunk.chunk_id,
+                chunk_size: chunk.size,
+                data: chunk_data
+            }}});
+            request_id_index += 1;
+        }
+
+        file_messages
+    }
+
+    pub fn request_id(&self) -> Option<CloveRequestID> {
         match self {
-            CloveMessage::RequestProxy { .. } => {U256::from(0)}
-            CloveMessage::ProxyInfo { .. } => {U256::from(0)}
-            CloveMessage::Store { request_id, .. } => {request_id.clone()}
-            CloveMessage::SearchOverlay { request_id, .. } => {request_id.clone()}
-            CloveMessage::SearchGarlemlia { request_id, .. } => {request_id.clone()}
-            CloveMessage::ResponseDirect { request_id, .. } => {request_id.clone()}
-            CloveMessage::ResponseWithValidator { request_id, .. } => {request_id.clone()}
+            CloveMessage::RequestProxy { .. } => {None}
+            CloveMessage::ProxyInfo { .. } => {None}
+            CloveMessage::Store { request_id, .. } => {Some(request_id.clone())}
+            CloveMessage::SearchOverlay { request_id, .. } => {Some(request_id.clone())}
+            CloveMessage::SearchGarlemlia { request_id, .. } => {Some(request_id.clone())}
+            CloveMessage::Response { request_id, .. } => {Some(request_id.clone())}
+            CloveMessage::ResponseWithValidator { request_id, .. } => {Some(request_id.clone())}
         }
     }
 
@@ -1071,7 +1132,7 @@ impl CloveMessage {
             CloveMessage::Store { .. } => {None}
             CloveMessage::SearchOverlay { proxy_id, .. } => {Some(proxy_id.clone())}
             CloveMessage::SearchGarlemlia { .. } => {None}
-            CloveMessage::ResponseDirect { .. } => {None}
+            CloveMessage::Response { .. } => {None}
             CloveMessage::ResponseWithValidator { proxy_id, .. } => {Some(proxy_id.clone())}
         }
     }
@@ -1083,13 +1144,13 @@ impl CloveMessage {
             CloveMessage::Store { .. } => {true}
             CloveMessage::SearchOverlay { .. } => {true}
             CloveMessage::SearchGarlemlia { .. } => {true}
-            CloveMessage::ResponseDirect { .. } => {true}
+            CloveMessage::Response { .. } => {true}
             CloveMessage::ResponseWithValidator { .. } => {true}
         }
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlicMessage {
     FindProxy {
         sequence_number: U256,
@@ -1121,7 +1182,12 @@ pub enum GarlicMessage {
         sequence_number: U256,
         old_node: Node,
         new_node: Node
-    }
+    },
+    ResponseDirect {
+        request_id: CloveRequestID,
+        clove_1: Clove,
+        clove_2: Clove
+    },
 }
 
 impl GarlicMessage {
@@ -1134,6 +1200,7 @@ impl GarlicMessage {
             GarlicMessage::RefreshAlt { .. } => {U256::from(0)}
             GarlicMessage::UpdateAlt { .. } => {U256::from(0)}
             GarlicMessage::UpdateAltNextOrLast { .. } => {U256::from(0)}
+            GarlicMessage::ResponseDirect { .. } => {U256::from(0)}
         }
     }
 
@@ -1164,6 +1231,7 @@ impl GarlicMessage {
             GarlicMessage::RefreshAlt { .. } => {None}
             GarlicMessage::UpdateAlt { .. } => {None}
             GarlicMessage::UpdateAltNextOrLast { .. } => {None}
+            GarlicMessage::ResponseDirect { .. } => {None}
         }
     }
 
