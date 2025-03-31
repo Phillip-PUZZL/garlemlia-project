@@ -1,6 +1,6 @@
 use crate::garlemlia::garlemlia;
 use crate::garlemlia_structs::garlemlia_structs;
-use crate::garlemlia_structs::garlemlia_structs::{u256_random, CloveMessage, GarlemliaData, GarlemliaFindRequest, GarlemliaStoreRequest, SerializableRoutingTable};
+use crate::garlemlia_structs::garlemlia_structs::{u256_random, CloveMessage, GarlemliaData, GarlemliaFindRequest, GarlemliaResponse, GarlemliaStoreRequest, SerializableRoutingTable};
 use crate::garlic_cast::garlic_cast;
 use crate::garlic_cast::garlic_cast::SerializableGarlicCast;
 use async_trait::async_trait;
@@ -237,7 +237,7 @@ impl SimulatedNode {
 
     async fn parse_message(&mut self, sender_node: Node, msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
         if self.is_online {
-            return parse_message_generic(self.routing_table.clone(), self.data_store.clone(), self.garlic.clone(), self.file_storage.clone(), sender_node, self.node.clone(), msg, self.is_processing.clone()).await;
+            return parse_message_generic(Arc::clone(&self.routing_table), Arc::clone(&self.data_store), Arc::clone(&self.garlic), Arc::clone(&self.file_storage), sender_node, self.node.clone(), msg, Arc::clone(&self.is_processing)).await;
         }
         Err(Some(MessageError::Timeout))
     }
@@ -369,6 +369,35 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                 data_store.lock().await.insert(key, store_val.clone().unwrap());
             }
 
+            match value {
+                GarlemliaStoreRequest::FileName { .. } => {
+                    {
+                        let mut garlic_lock = garlic_cast.lock().await;
+                        let proxies_count = garlic_lock.proxies.len();
+
+                        if proxies_count == 0 {
+                            {
+                                loop {
+                                    tokio::time::sleep(Duration::from_millis(10)).await;
+                                    let mut check = simulated_processing.lock().await;
+                                    if !check.check() {
+                                        check.set(true);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            garlic_lock.discover_proxies(20).await;
+
+                            {
+                                simulated_processing.lock().await.set(false);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+
             Err(None)
         }
 
@@ -469,14 +498,26 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                         let mut response_data = None;
                         match action.clone() {
                             CloveMessage::SearchOverlay { request_id, proxy_id, search_term, .. } => {
-                                GarlemliaFunctions::store_value(get_global_socket().unwrap(), self_node_clone,
-                                                                routing_table_clone,
-                                                                message_handler_clone,
-                                                                data_store_clone,
+                                GarlemliaFunctions::store_value(get_global_socket().unwrap(), self_node_clone.clone(),
+                                                                Arc::clone(&routing_table_clone),
+                                                                Arc::clone(&message_handler_clone),
+                                                                Arc::clone(&data_store_clone),
                                                                 Arc::clone(&garlic_clone),
                                                                 file_storage_clone,
                                                                 GarlemliaStoreRequest::Validator { id: request_id.request_id, proxy_id },
                                                                 3).await;
+
+                                let self_id = self_node_clone.clone().id;
+
+                                let total_buckets = 255;
+                                for b in 0..=total_buckets {
+                                    let refresh_id = RoutingTable::random_id_for_bucket(self_id, b);
+                                    GarlemliaFunctions::iterative_find_node(get_global_socket().unwrap(), self_node_clone.clone(),
+                                                                            Arc::clone(&routing_table_clone),
+                                                                            Arc::clone(&message_handler_clone),
+                                                                            Arc::clone(&garlic_clone),
+                                                                            refresh_id).await;
+                                }
 
                                 response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term).await;
                             }
@@ -503,34 +544,11 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                                                                 file_storage_clone,
                                                                 data.clone(),
                                                                 2).await;
-
+                            }
+                            CloveMessage::Response { data, .. } => {
                                 match data {
-                                    GarlemliaStoreRequest::FileName { .. } | GarlemliaStoreRequest::MetaData { .. } | GarlemliaStoreRequest::FileKey { .. } => {
-                                        {
-                                            let garlic_lock = garlic_clone.lock().await;
-                                            let proxies_count;
-                                            {
-                                                proxies_count = garlic_lock.proxies.lock().await.len();
-                                            }
-                                            if proxies_count == 0 {
-                                                {
-                                                    loop {
-                                                        tokio::time::sleep(Duration::from_millis(10)).await;
-                                                        let mut check = check_processing.lock().await;
-                                                        if !check.check() {
-                                                            check.set(true);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-
-                                                garlic_lock.discover_proxies(20).await;
-
-                                                {
-                                                    check_processing.lock().await.set(false);
-                                                }
-                                            }
-                                        }
+                                    GarlemliaResponse::FileChunk { chunk_id, data, .. } => {
+                                        let _ = file_storage.lock().await.store_chunk(chunk_id, data).await;
                                     }
                                     _ => {}
                                 }
@@ -538,22 +556,24 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
                             _ => {}
                         }
 
-                        {
+                        if response_data.is_some() {
                             {
-                                loop {
-                                    tokio::time::sleep(Duration::from_millis(10)).await;
-                                    let mut check = check_processing.lock().await;
-                                    if !check.check() {
-                                        check.set(true);
-                                        break;
+                                {
+                                    loop {
+                                        tokio::time::sleep(Duration::from_millis(10)).await;
+                                        let mut check = check_processing.lock().await;
+                                        if !check.check() {
+                                            check.set(true);
+                                            break;
+                                        }
                                     }
                                 }
-                            }
 
-                            garlic_clone.lock().await.run_proxy_message(action, response_data).await;
+                                garlic_clone.lock().await.run_proxy_message(action, response_data).await;
 
-                            {
-                                check_processing.lock().await.set(false);
+                                {
+                                    check_processing.lock().await.set(false);
+                                }
                             }
                         }
                     }
@@ -578,12 +598,17 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
         }
 
         GarlemliaMessage::SearchFile { request_id, proxy_id, search_term, public_key, .. } => {
+            println!("{} SEARCHING", self_node.address);
             add_to_routing_table(routing_table.clone(), sender_node.clone()).await;
 
             let response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
             
             if response_data.is_some() {
                 println!("FILE FOUND HERE DUMMY");
+            }
+
+            if self_node.address.port() == 18314 {
+                println!("SEARCHED 18314, SHOULD GET RESULT");
             }
             
             let new_clove_msg = CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key };
@@ -627,9 +652,24 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
 }
 
 async fn parse_message_running(garl: Arc<Mutex<GarlemliaInfo>>, sender_node: Node, msg: GarlemliaMessage) -> Result<GarlemliaMessage, Option<MessageError>> {
-    let garlemlia = garl.lock().await;
-    let node = garlemlia.node.lock().await.clone();
-    parse_message_generic(garlemlia.routing_table.clone(), garlemlia.data_store.clone(), garlemlia.garlic.clone(), garlemlia.file_storage.clone(), sender_node, node.clone(), msg, garlemlia.is_processing.clone()).await
+    let routing_table;
+    let data_store;
+    let garlic;
+    let file_storage;
+    let is_processing;
+    let node;
+
+    {
+        let garlemlia = garl.lock().await;
+        node = garlemlia.node.lock().await.clone();
+        routing_table = Arc::clone(&garlemlia.routing_table);
+        data_store = Arc::clone(&garlemlia.data_store);
+        garlic = Arc::clone(&garlemlia.garlic);
+        file_storage = Arc::clone(&garlemlia.file_storage);
+        is_processing = Arc::clone(&garlemlia.is_processing);
+    }
+
+    parse_message_generic(routing_table, data_store, garlic, file_storage, sender_node, node, msg, is_processing).await
 }
 
 pub fn simulated_to_gmessage(local_addr: SocketAddr) -> Box<dyn GMessage> {
@@ -912,7 +952,7 @@ async fn simulated_node_to_file(sim_node: SimulatedNode) -> FileNode {
         routing_table: SerializableRoutingTable::from(sim_node.routing_table.lock().await.clone()).await,
         data_store: sim_node.data_store.lock().await.clone(),
         file_storage: sim_node.file_storage.lock().await.file_storage_settings_path.clone(),
-        garlic: SerializableGarlicCast::from(sim_node.garlic.lock().await.clone()).await,
+        garlic: SerializableGarlicCast::from(sim_node.garlic.lock().await.clone()),
         is_online: sim_node.is_online
     }
 }
@@ -940,8 +980,7 @@ pub async fn save_simulated_nodes(file_path: &str, nodes: &Vec<SimulatedNode>) -
     for node in nodes {
         {
             node.file_storage.lock().await.save().await?;
-            let garlic = node.garlic.lock().await;
-            garlic.set_known(vec![]).await;
+            node.garlic.lock().await.set_known(vec![]);
         }
         file_nodes.push(simulated_node_to_file(node.clone()).await);
     }
@@ -1061,8 +1100,8 @@ pub async fn create_network(mut nodes: Vec<SimulatedNode>, mut keys: Vec<KeyFile
 
     {
         let mut gc_first = nodes[0].garlic.lock().await;
-        gc_first.set_public_key(pub_k_first).await;
-        gc_first.set_private_key(priv_k_first).await;
+        gc_first.set_public_key(pub_k_first);
+        gc_first.set_private_key(priv_k_first);
     }
 
     {

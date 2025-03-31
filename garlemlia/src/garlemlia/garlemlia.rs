@@ -99,7 +99,7 @@ impl GarlemliaFunctions {
 
             {
                 // Adds to list of known nodes
-                garlic.lock().await.update_known(new_nodes.clone()).await;
+                garlic.lock().await.update_known(new_nodes.clone());
             }
 
             // Merge new nodes into our candidate set.
@@ -312,9 +312,8 @@ impl GarlemliaFunctions {
                 }
 
                 // Store the value locally if this node is among the closest
-                let mut data_store = data_store.lock().await;
                 if store_val.is_some() {
-                    data_store.insert(request.get_id(), store_val.unwrap());
+                    data_store.lock().await.insert(request.get_id(), store_val.unwrap());
                     continue;
                 }
             }
@@ -340,7 +339,10 @@ impl GarlemliaFunctions {
     pub async fn search_file(data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>, file_name: String) -> Option<GarlemliaResponse> {
         let mut response = None;
         
-        let ds = data_store.lock().await;
+        let ds;
+        {
+            ds = data_store.lock().await.clone();
+        }
         
         for item in ds.iter() {
             let g_data = item.1.clone();
@@ -468,7 +470,7 @@ impl Garlemlia {
         }
     }
     pub async fn set_garlic_cast(&self, gc: GarlicCast) {
-        self.garlic.lock().await.update_from(gc).await;
+        self.garlic.lock().await.update_from(gc);
     }
     
 

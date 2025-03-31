@@ -9,7 +9,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct HashLocation {
-    time: DateTime<Utc>,
+    pub time: DateTime<Utc>,
     pub id: U256
 }
 

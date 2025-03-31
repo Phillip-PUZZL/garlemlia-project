@@ -1,3 +1,4 @@
+use crate::file_utils::garlemlia_files::{FileInfo, FileStorage, FileUpload};
 use crate::time_hash::time_based_hash::{HashLocation, RotatingHash};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -13,7 +14,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::{mpsc, mpsc::UnboundedReceiver, Mutex};
 use tokio::time::{timeout, Duration};
-use crate::file_utils::garlemlia_files::{FileStorage, FileUpload};
 
 pub fn u256_random() -> U256 {
     let mut rng = rng();
@@ -980,7 +980,35 @@ pub enum GarlemliaResponse {
     FileName { name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: Vec<HashLocation>, key_location: Vec<HashLocation> },
     MetaData { file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
     FileKey { enc_file_id: U256, decryption_key: String },
-    FileChunk { chunk_id: U256, chunk_size: usize, data: Vec<u8> }
+    FileChunk { chunk_id: U256, chunk_size: usize, data: Vec<u8> },
+    FileChunkInfo { chunk_id: U256, chunk_size: usize }
+}
+
+impl GarlemliaResponse {
+    pub fn add_to_file_information(&self, mut file_info: FileInfo) -> Option<FileInfo> {
+        match self {
+            GarlemliaResponse::MetaData { file_id, chunk_info, .. } => {
+                file_info.set_file_id(file_id.clone());
+                file_info.set_chunk_info(chunk_info.clone());
+
+                Some(file_info)
+            }
+            GarlemliaResponse::FileKey { enc_file_id, decryption_key } => {
+                file_info.set_enc_file_id(enc_file_id.clone());
+                file_info.set_decryption_key(decryption_key.clone());
+
+                Some(file_info)
+            }
+            GarlemliaResponse::FileChunkInfo { chunk_id, .. } => {
+                file_info.add_downloaded(*chunk_id);
+
+                Some(file_info)
+            }
+            _ => {
+                None
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1107,8 +1135,7 @@ pub enum CloveMessage {
     },
     SearchGarlemlia {
         request_id: CloveRequestID,
-        key: U256,
-        public_key: String
+        key: U256
     },
     Response {
         request_id: CloveRequestID,

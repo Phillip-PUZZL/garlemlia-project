@@ -13,26 +13,28 @@ use tokio::fs;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileInfo {
+    request_id: U256,
     pub name: String,
     pub file_type: String,
     pub size: usize,
     downloaded: usize,
     pub categories: Vec<String>,
-    metadata_location: Vec<HashLocation>,
-    key_location: Vec<HashLocation>,
+    pub metadata_location: Vec<HashLocation>,
+    pub key_location: Vec<HashLocation>,
     file_id: Option<U256>,
     enc_file_id: Option<U256>,
     decryption_key: Option<String>,
     downloaded_chunks: Vec<ChunkInfo>,
-    needed_chunks: Vec<ChunkInfo>,
+    pub(crate) needed_chunks: Vec<ChunkInfo>,
     all_chunks: Vec<ChunkInfo>
 }
 
 impl FileInfo {
     pub fn new(name: String, file_type: String, size: usize, categories: Vec<String>) -> FileInfo {
         FileInfo {
+            request_id: u256_random(),
             name,
             file_type,
             size,
@@ -51,6 +53,7 @@ impl FileInfo {
     
     pub fn from(name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: Vec<HashLocation>, key_location: Vec<HashLocation>) -> FileInfo {
         FileInfo {
+            request_id: u256_random(),
             name,
             file_type,
             size,
@@ -67,6 +70,14 @@ impl FileInfo {
         }
     }
 
+    pub fn set_request_id(&mut self, request_id: U256) {
+        self.request_id = request_id;
+    }
+
+    pub fn get_request_id(&self) -> U256 {
+        self.request_id
+    }
+
     pub fn set_chunk_info(&mut self, chunks: Vec<ChunkInfo>) {
         self.needed_chunks = chunks.clone();
         self.all_chunks = chunks;
@@ -74,10 +85,6 @@ impl FileInfo {
 
     pub fn set_file_id(&mut self, file_id: U256) {
         self.file_id = Some(file_id);
-    }
-
-    pub fn set_downloaded(&mut self, downloaded: usize) {
-        self.downloaded = downloaded;
     }
 
     pub fn set_enc_file_id(&mut self, enc_file_id: U256) {
@@ -88,10 +95,11 @@ impl FileInfo {
         self.decryption_key = Some(decryption_key);
     }
 
-    pub fn add_downloaded(&mut self, chunk: ChunkInfo) {
-        self.downloaded_chunks.push(chunk.clone());
+    pub fn add_downloaded(&mut self, chunk_id: U256) {
         for i in 0..self.needed_chunks.len() {
-            if self.needed_chunks[i].chunk_id == chunk.chunk_id {
+            if self.needed_chunks[i].chunk_id == chunk_id {
+                self.downloaded_chunks.push(self.needed_chunks[i].clone());
+                self.downloaded += self.needed_chunks[i].size;
                 self.needed_chunks.remove(i);
                 break;
             }
@@ -122,7 +130,7 @@ impl FileInfo {
         }
 
         let mut encrypted_file = File::create(encrypted_file_path).await.unwrap();
-        for chunk in chunks_ordered {
+        for chunk in chunks_ordered.clone() {
             let chunk_file_name = hex::encode(chunk.chunk_id.to_big_endian());
 
             let chunk_file_location = format!("{}/{}", chunk_files_path.to_str().unwrap(), chunk_file_name);
@@ -144,6 +152,12 @@ impl FileInfo {
             if enc_file_write.is_err() {
                 return Err((5, format!("Could not write to file {}", encrypted_file_location)));
             }
+        }
+
+        for chunk in chunks_ordered {
+            let chunk_file_name = hex::encode(chunk.chunk_id.to_big_endian());
+
+            let chunk_file_location = format!("{}/{}", chunk_files_path.to_str().unwrap(), chunk_file_name);
 
             let chunk_delete = fs::remove_file(chunk_file_location.clone()).await;
 
@@ -301,6 +315,16 @@ impl FileInfo {
 
         Ok(file_location)
     }
+
+    pub fn to_string(&self) -> String {
+        let mut output = format!("{{\n\tName: {}\n\tType: {}\n\tSize: {}\n\tDownloaded: {}\n\tCategories: [\n", self.name, self.file_type, self.size, self.downloaded);
+        for item in self.categories.clone() {
+            output.push_str(format!("\t\t{}", item).as_str());
+        }
+        output.push_str(format!("\t]\n\tChunks Downloaded: {}\n\tChunks Needed: {}\n}}", self.downloaded_chunks.len(), self.needed_chunks.len()).as_str());
+
+        output
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,8 +398,8 @@ impl FileStorage {
 
 pub struct FileInformation {
     id: U256,
-    name: String,
-    file_type: String,
+    pub name: String,
+    pub file_type: String,
     size: usize,
     categories: Vec<String>,
     file_id: U256,
