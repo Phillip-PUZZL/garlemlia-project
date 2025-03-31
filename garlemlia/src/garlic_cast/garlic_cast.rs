@@ -20,7 +20,7 @@ use std::sync::Arc;
 use primitive_types::U256;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use crate::file_utils::garlemlia_files::{FileStorage, FileUpload};
+use crate::file_utils::garlemlia_files::{FileInfo, FileStorage, FileUpload};
 use crate::garlemlia_structs::garlemlia_structs::{u256_random, CloveRequestID, GarlemliaResponse};
 
 pub const FORWARD_P: f64 = 0.95;
@@ -1971,8 +1971,9 @@ impl GarlicCast {
                     }
                     _ => {
                         println!("{} FAILED TO SEND ProxyAgree TO {} BUT SENT TO {}", self.local_node.address, n_2.address, n_1.address);
-                        self.cache.lock().await.remove_sequence(proxy.sequence_number);
-                        self.cache.lock().await.remove_sequence(old_sequence);
+                        let mut cache = self.cache.lock().await;
+                        cache.remove_sequence(proxy.sequence_number);
+                        cache.remove_sequence(old_sequence);
                     }
                 }
             }
@@ -2230,18 +2231,47 @@ impl GarlicCast {
         }
     }
     
+    pub async fn get_responses(&self) -> Vec<FileInfo> {
+        let responses;
+        {
+            responses = self.requests_as_initiator.lock().await.clone();
+        }
+        
+        let mut response_vec = vec![];
+        for i in responses {
+            for j in i.1.responses {
+                match j {
+                    CloveMessage::Response { data, .. } => {
+                        match data {
+                            GarlemliaResponse::FileName { name, file_type, size, categories, metadata_location, key_location } => {
+                                response_vec.push(FileInfo::from(name, file_type, size, categories, metadata_location, key_location));
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        response_vec
+    }
+    
     async fn manage_proxy_message(&self, req: CloveMessage) -> Option<CloveMessage> {
         match req.clone() {
-            CloveMessage::SearchOverlay { .. } => {
+            CloveMessage::SearchOverlay { request_id, proxy_id, .. } => {
+                println!("{} RECEIVED SEARCH REQUEST WITH ID {} PROXY ID: {}", self.local_node.address, request_id.request_id, proxy_id);
                 Some(req)
             }
             CloveMessage::SearchGarlemlia { .. } => {
                 Some(req)
             }
-            CloveMessage::ResponseWithValidator { .. } => {
+            CloveMessage::ResponseWithValidator { request_id, proxy_id, .. } => {
                 // This only gets sent to the proxy of the responder to a request
                 // The responder proxy uses ResponseDirect when sending the response
                 // to the proxy of the initiator
+
+                println!("{} RECEIVED RESPOND WITH VALIDATOR WITH ID {} PROXY ID: {}", self.local_node.address, request_id.request_id, proxy_id);
                 Some(req)
             }
             CloveMessage::Store { .. } => {
@@ -2254,7 +2284,18 @@ impl GarlicCast {
     }
 
     async fn send_search_to_known(&self, search_msg: GarlemliaMessage) {
-
+        let known_nodes;
+        {
+            known_nodes = self.known_nodes.lock().await.clone();
+        }
+        
+        for node in known_nodes {
+            {
+                if let Err(e) = self.message_handler.send_no_recv(&Arc::clone(&self.socket), self.local_node.clone(), &node.address, &search_msg).await {
+                    eprintln!("Failed to send SearchFile to {}: {:?}", node.address, e);
+                }
+            }
+        }
     }
 
     // This gets called from Kademlia after it finishes processing potential
@@ -2313,7 +2354,7 @@ impl GarlicCast {
                     self.send_proxy(proxy, cloves).await;
                 }
 
-                if random_bool(FORWARD_P) {
+                if random_bool(0.995) {
                     let search_msg = GarlemliaMessage::SearchFile {
                         request_id: request_id.clone(),
                         proxy_id,
@@ -2369,6 +2410,7 @@ impl GarlicCast {
                 
                 match response.unwrap() {
                     GarlemliaResponse::Validator { proxy } => {
+                        println!("{} RECEIVED RESPOND WITH VALIDATOR AND SENDING TO {}", self.local_node.address, proxy.unwrap());
                         {
                             if let Err(e) = self.message_handler.send_no_recv(&Arc::clone(&self.socket), self.local_node.clone(), &proxy.unwrap(), &GarlicMessage::build_send(self.local_node.clone(), msg)).await {
                                 eprintln!("Failed to send IsAlive to {}: {:?}", proxy.unwrap(), e);
@@ -2573,7 +2615,9 @@ impl GarlicCast {
                                         self.send_alt(Some(CloveNode { node, sequence_number }), Some(next_node.clone()), new_alt).await;
                                     }
 
-                                    self.cache.lock().await.am_alt_for.remove(&sequence_number);
+                                    {
+                                        self.cache.lock().await.am_alt_for.remove(&sequence_number);
+                                    }
                                 }
                                 self.forward(&next_node, &msg).await;
                                 Ok(None)

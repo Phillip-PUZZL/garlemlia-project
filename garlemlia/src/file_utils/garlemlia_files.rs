@@ -1,5 +1,5 @@
 use crate::garlemlia_structs::garlemlia_structs::{u256_random, ChunkInfo};
-use crate::time_hash::time_based_hash::RotatingHash;
+use crate::time_hash::time_based_hash::{HashLocation, RotatingHash};
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use primitive_types::U256;
@@ -15,12 +15,13 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
-    id: U256,
-    name: String,
-    file_type: String,
-    size: usize,
+    pub name: String,
+    pub file_type: String,
+    pub size: usize,
     downloaded: usize,
-    categories: Vec<String>,
+    pub categories: Vec<String>,
+    metadata_location: Vec<HashLocation>,
+    key_location: Vec<HashLocation>,
     file_id: Option<U256>,
     enc_file_id: Option<U256>,
     decryption_key: Option<String>,
@@ -30,14 +31,33 @@ pub struct FileInfo {
 }
 
 impl FileInfo {
-    pub fn new(id: U256, name: String, file_type: String, size: usize, categories: Vec<String>) -> FileInfo {
+    pub fn new(name: String, file_type: String, size: usize, categories: Vec<String>) -> FileInfo {
         FileInfo {
-            id,
             name,
             file_type,
             size,
             downloaded: 0,
             categories,
+            metadata_location: vec![],
+            key_location: vec![],
+            file_id: None,
+            enc_file_id: None,
+            decryption_key: None,
+            downloaded_chunks: vec![],
+            needed_chunks: vec![],
+            all_chunks: vec![],
+        }
+    }
+    
+    pub fn from(name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: Vec<HashLocation>, key_location: Vec<HashLocation>) -> FileInfo {
+        FileInfo {
+            name,
+            file_type,
+            size,
+            downloaded: 0,
+            categories,
+            metadata_location,
+            key_location,
             file_id: None,
             enc_file_id: None,
             decryption_key: None,
@@ -449,8 +469,13 @@ impl FileUpload {
 
         let decryption_key = hex::encode(key_bytes);
 
+        let name_vec = name.as_bytes().to_vec();
+        let mut hasher3 = Sha256::new();
+        hasher3.update(&name_vec);
+        let hash3 = hasher3.finalize();
+
         Ok(FileInformation {
-            id: u256_random(),
+            id: U256::from_big_endian(&hash3),
             name,
             file_type,
             size,

@@ -581,6 +581,11 @@ async fn parse_message_generic(routing_table: Arc<Mutex<RoutingTable>>,
             add_to_routing_table(routing_table.clone(), sender_node.clone()).await;
 
             let response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
+            
+            if response_data.is_some() {
+                println!("FILE FOUND HERE DUMMY");
+            }
+            
             let new_clove_msg = CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key };
 
             let garlic_clone = Arc::clone(&garlic_cast);

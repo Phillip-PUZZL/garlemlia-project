@@ -10,7 +10,6 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::fs;
-use tokio::fs::File;
 use garlemlia::file_utils::garlemlia_files::FileUpload;
 
 async fn create_test_node(id: U256, port: u16) -> Garlemlia {
@@ -59,6 +58,7 @@ async fn garlemlia_console() {
     let mut selected_search_proxies = vec![];
     let mut file_proxy_ids = vec![];
     let mut selected_file_proxies = vec![];
+    let mut found_files = vec![];
 
     let mut selected: usize = usize::MAX;
 
@@ -203,7 +203,7 @@ async fn garlemlia_console() {
                 let file_name = file_info[1].to_string();
 
                 {
-                    running_nodes[selected].garlic.lock().await.send_search_overlay(file_name.parse().unwrap(), search_proxy_ids.clone(), 3).await;
+                    running_nodes[selected].garlic.lock().await.send_search_overlay(file_name.parse().unwrap(), search_proxy_ids.clone(), search_proxy_ids.len() as u8).await;
                 }
             } else if s.starts_with("SEARCH KADEMLIA ") {
                 let re = Regex::new(r"\d+").unwrap();
@@ -234,11 +234,19 @@ async fn garlemlia_console() {
 
             let chunks_info = FileUpload::split_into_chunks(Box::from(Path::new(&encrypted_file_name)), 8).await.unwrap();
 
-            let file_upload = FileUpload::new(info, chunks_info, 0.25);
+            let file_upload = FileUpload::new(info, chunks_info, 10000.0);
 
             {
                 let file_storage = running_nodes[selected].file_storage.lock().await.clone();
                 running_nodes[selected].garlic.lock().await.send_store_file(file_upload, search_proxy_ids.clone(), file_proxy_ids.clone(), file_storage).await;
+            }
+        } else if s.starts_with("LIST FOUND") {
+            {
+                found_files = running_nodes[selected].garlic.lock().await.get_responses().await;
+            }
+            
+            for i in 0..found_files.len() {
+                println!("{}. Name: {}, Type: {}, Size: {}", i, found_files[i].name, found_files[i].file_type, found_files[i].size);
             }
         } else if s.starts_with("CONNECT SIMULATED ") {
             let re = Regex::new(r"CONNECT SIMULATED (.+)").unwrap();
