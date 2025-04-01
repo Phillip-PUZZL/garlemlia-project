@@ -735,6 +735,14 @@ impl Garlemlia {
                                                                             data,
                                                                             2).await;
                                         }
+                                        CloveMessage::Response { data, .. } => {
+                                            match data {
+                                                GarlemliaResponse::FileChunk { chunk_id, data, .. } => {
+                                                    let _ = file_storage.lock().await.store_temp_chunk(chunk_id, data).await;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
                                         _ => {}
                                     }
 

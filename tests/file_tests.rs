@@ -77,14 +77,14 @@ async fn file_assembly_and_decryption_test() {
     file.read_to_string(&mut contents).await.unwrap();
     let file_upload: FileUpload = serde_json::from_str(&contents).unwrap();
 
-    let mut file_info = FileInfo::new(file_upload.id, file_upload.name, file_upload.file_type, file_upload.size, file_upload.categories);
+    let mut file_info = FileInfo::new(file_upload.name, file_upload.file_type, file_upload.size, file_upload.categories);
 
     file_info.set_file_id(file_upload.file_id);
     file_info.set_enc_file_id(file_upload.enc_file_id);
     file_info.set_decryption_key(file_upload.decryption_key);
     file_info.set_chunk_info(file_upload.chunks.clone());
     for chunk in file_upload.chunks {
-        file_info.add_downloaded(chunk);
+        file_info.add_downloaded(chunk.chunk_id);
     }
 
     let assemble_res = file_info.assemble(Box::from(Path::new(&test_chunks_output_folder))).await;

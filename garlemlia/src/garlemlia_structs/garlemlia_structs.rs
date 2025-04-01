@@ -1000,7 +1000,7 @@ impl GarlemliaResponse {
                 Some(file_info)
             }
             GarlemliaResponse::FileChunkInfo { chunk_id, .. } => {
-                file_info.add_downloaded(*chunk_id);
+                file_info.add_downloaded(chunk_id.clone());
 
                 Some(file_info)
             }

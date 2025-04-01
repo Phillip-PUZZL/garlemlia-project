@@ -369,6 +369,17 @@ impl FileStorage {
         Ok(chunk_data)
     }
 
+    pub async fn store_temp_chunk(&self, id: U256, data: Vec<u8>) -> std::io::Result<bool> {
+        let chunk_path = Path::new(&self.temp_chunk_data_path).join(hex::encode(id.to_big_endian()));
+
+        {
+            let mut chunk_file = File::create(&chunk_path).await?;
+            chunk_file.write_all(&data).await?;
+        }
+
+        Ok(true)
+    }
+
     pub async fn get_temp_chunk(&self, id: U256) -> std::io::Result<Vec<u8>> {
         let chunk_path = Path::new(&self.temp_chunk_data_path).join(hex::encode(id.to_big_endian()));
 

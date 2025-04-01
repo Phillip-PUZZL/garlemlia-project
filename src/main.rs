@@ -62,10 +62,12 @@ async fn garlemlia_console() {
     let mut file_proxy_ids = vec![];
     let mut selected_file_proxies = vec![];
     let mut found_files: Vec<FileInfo> = vec![];
-    let mut file_info_responses: HashMap<U256, Vec<GarlemliaResponse>> = HashMap::new();
-    let mut file_download_responses: HashMap<U256, Vec<GarlemliaResponse>> = HashMap::new();
+    let mut file_info_responses: HashMap<U256, Vec<GarlemliaResponse>>;
+    let mut file_download_responses: HashMap<U256, Vec<GarlemliaResponse>>;
     let mut pending_downloads = vec![];
     let mut downloads = HashMap::new();
+    
+    let mut encrypted_file_paths = HashMap::new();
 
     let mut selected: usize = usize::MAX;
 
@@ -268,7 +270,37 @@ async fn garlemlia_console() {
 
             {
                 let request_id = running_nodes[selected].garlic.lock().await.download_file(file_info.clone(), file_proxy_ids.clone()).await.clone();
-                downloads.insert(request_id, file_info.get_request_id());
+                downloads.insert(file_info.get_request_id(), request_id);
+            }
+        } else if s.starts_with("ASSEMBLE ") {
+            let re = Regex::new(r"\d+").unwrap();
+            let result: Option<Match> = re.find(&*s);
+            let file_location: u16 = result.map(|m| m.as_str().parse::<u16>().unwrap()).unwrap_or(0);
+
+            let file_info: FileInfo = found_files[file_location as usize].clone();
+
+            let res = file_info.assemble(Box::from(Path::new(&running_nodes[selected].file_storage.lock().await.temp_chunk_data_path.clone()))).await;
+            
+            if res.is_err() {
+                println!("ERROR ASSEMBLING FILE: {}", res.err().unwrap().1);
+            } else {
+                encrypted_file_paths.insert(file_location, res.unwrap());
+            }
+        } else if s.starts_with("DECRYPT ") {
+            let re = Regex::new(r"\d+").unwrap();
+            let result: Option<Match> = re.find(&*s);
+            let file_location: u16 = result.map(|m| m.as_str().parse::<u16>().unwrap()).unwrap_or(0);
+
+            let file_info: FileInfo = found_files[file_location as usize].clone();
+            
+            if let Some(enc_path) = encrypted_file_paths.get(&file_location) {
+                let res = file_info.decrypt(Box::from(Path::new(&enc_path)), Box::from(Path::new(&running_nodes[selected].file_storage.lock().await.downloads_path.clone()))).await;
+
+                if res.is_err() {
+                    println!("ERROR ASSEMBLING FILE: {}", res.err().unwrap().1);
+                }
+            } else {
+                println!("FILE NOT ASSEMBLED");
             }
         } else if s.starts_with("COLLECT SEARCHES") {
             {
@@ -284,49 +316,54 @@ async fn garlemlia_console() {
                 file_info_responses = running_nodes[selected].garlic.lock().await.get_file_info_responses();
             }
 
-            let mut le_new = vec![];
             for i in 0..pending_downloads.len() {
                 let file_info = file_info_responses.get(&pending_downloads[i]).unwrap();
+                let mut index = 0;
                 for mut found_item in found_files.clone() {
                     if found_item.get_request_id() == pending_downloads[i] {
                         for item in file_info {
                             found_item = item.add_to_file_information(found_item).unwrap();
                         }
-                        le_new.push(found_item.clone());
+                        found_files.remove(index);
+                        found_files.push(found_item.clone());
 
                         println!("{}. {}", i, found_item.to_string());
 
                         break;
                     }
+                    index += 1;
                 }
             }
-
-            found_files.extend(le_new);
-            found_files.dedup_by(|f, f2| f.get_request_id() == f2.get_request_id());
         } else if s.starts_with("COLLECT DOWNLOADS") {
             {
                 file_download_responses = running_nodes[selected].garlic.lock().await.get_download_responses();
             }
 
-            let mut le_new = vec![];
             for i in 0..pending_downloads.len() {
-                let file_info = file_download_responses.get(&pending_downloads[i]).unwrap();
+                let file_info_opt = file_download_responses.get(downloads.get(&pending_downloads[i]).unwrap());
+                
+                if file_info_opt.is_none() {
+                    continue;
+                }
+                
+                let file_info = file_info_opt.unwrap();
+                
+                let mut index = 0;
                 for mut found_item in found_files.clone() {
                     if found_item.get_request_id() == pending_downloads[i] {
                         for item in file_info {
                             found_item = item.add_to_file_information(found_item).unwrap();
                         }
-                        le_new.push(found_item.clone());
+                        found_files.remove(index);
+                        found_files.push(found_item.clone());
 
                         println!("{}. {}", i, found_item.to_string());
 
                         break;
                     }
+                    index += 1;
                 }
             }
-
-            found_files.extend(le_new);
-            found_files.dedup_by(|f, f2| f.get_request_id() == f2.get_request_id());
         } else if s.starts_with("CONNECT SIMULATED ") {
             let re = Regex::new(r"CONNECT SIMULATED (.+)").unwrap();
             let result = re.captures(&*s);
@@ -425,7 +462,7 @@ async fn garlemlia_console() {
                     running_nodes[selected].garlic.lock().await.discover_proxies(60).await;
                 }
 
-                sleep(Duration::from_secs(2)).await;
+                sleep(Duration::from_secs(3)).await;
 
                 {
                     proxies_show = running_nodes[selected].garlic.lock().await.get_proxies();
