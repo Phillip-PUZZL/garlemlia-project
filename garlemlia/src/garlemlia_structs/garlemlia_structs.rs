@@ -1020,7 +1020,7 @@ pub enum GarlemliaMessage {
     Garlic { msg: GarlicMessage, sender: Node },
     Ping { sender: Node },
     Pong { sender: Node },
-    SearchFile { request_id: CloveRequestID, proxy_id: U256, search_term: String, public_key: String, sender: Node },
+    SearchFile { request_id: CloveRequestID, proxy_id: U256, search_term: String, public_key: String, sender: Node, ttl: u8 },
     AgreeAlt { alt_sequence_number: U256, sender: Node },
     Stop { }
 }
@@ -1101,11 +1101,11 @@ pub struct FileCloveMessage {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct CloveRequestID {
     pub request_id: U256,
-    pub index: u8
+    pub index: u64
 }
 
 impl CloveRequestID {
-    pub fn new(request_id: U256, index: u8) -> CloveRequestID {
+    pub fn new(request_id: U256, index: u64) -> CloveRequestID {
         CloveRequestID {
             request_id,
             index,
@@ -1131,7 +1131,8 @@ pub enum CloveMessage {
         request_id: CloveRequestID,
         proxy_id: U256,
         search_term: String,
-        public_key: String
+        public_key: String,
+        ttl: u8
     },
     SearchGarlemlia {
         request_id: CloveRequestID,

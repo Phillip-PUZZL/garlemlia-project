@@ -84,7 +84,7 @@ async fn garlemlia_console() {
             s.pop();
         }
 
-        if s.starts_with("RUNNING") {
+        if s.eq("RUNNING") {
             for i in 0..running_nodes.len() {
                 if i == selected {
                     print!("* ");
@@ -92,7 +92,7 @@ async fn garlemlia_console() {
                 let now_node = running_nodes[i].node.lock().await;
                 println!("{}. ADDRESS: {} ID: {}", i, now_node.address, now_node.id);
             }
-        } else if s.starts_with("PROXIES") {
+        } else if s.eq("PROXIES") || s.eq("COLLECT PROXIES") {
             proxies_show = running_nodes[selected].garlic.lock().await.get_proxies();
             proxies_show.sort_by_key(|p| p.neighbor_1_hops + p.neighbor_2_hops);
 
@@ -149,10 +149,10 @@ async fn garlemlia_console() {
                         SIM.lock().await.set_nodes(nodes.clone());
                     }
                     simulated_nodes = nodes.clone();
+                    println!("SIM LOADED");
                 }
                 Err(e) => {
-                    eprintln!("Error loading nodes: {}", e);
-                    assert!(false, "Could not load nodes");
+                    eprintln!("ERROR LOADING SIM: {}", e);
                 },
             }
         } else if s.starts_with("SAVE SIM ") {
@@ -170,29 +170,24 @@ async fn garlemlia_console() {
             }
 
             if let Err(e) = save_simulated_nodes(&*file_path, &simulated_nodes).await {
-                eprintln!("Error saving nodes: {}", e);
+                eprintln!("ERROR SAVING SIM: {}", e);
             } else {
-                println!("Saved updated nodes to {}", file_path);
+                println!("SAVED SIM TO {}", file_path);
             }
         } else if s.starts_with("JOIN ") {
-            let re = Regex::new(r"JOIN (.+):").unwrap();
-            let re2 = Regex::new(r":(\d+)").unwrap();
-
+            let re = Regex::new(r"JOIN (.+)").unwrap();
             let result = re.captures(&*s);
-            let Some(capture_info) = result else {
-                println!("NO PATH GIVEN");
+            let Some(node_info) = result else {
+                println!("NO NODE GIVEN");
                 continue;
             };
-            let address = capture_info[1].to_string();
+            let mut node_address = node_info[1].to_string();
+            node_address = node_address.replace("::", "127.0.0.1:");
 
-            let result = re2.captures(&*s);
-            let Some(capture_info) = result else {
-                println!("NO PATH GIVEN");
-                continue;
-            };
-            let port: u16 = capture_info[1].to_string().parse::<u16>().unwrap();
+            let address_vec = node_address.split(':').collect::<Vec<&str>>();
 
-            running_nodes[selected].join_network(get_global_socket().unwrap().clone(), &SocketAddr::new(address.parse().unwrap(), port)).await;
+            running_nodes[selected].join_network(get_global_socket().unwrap().clone(), &SocketAddr::new(address_vec[0].parse().unwrap(), address_vec[1].parse().unwrap())).await;
+            println!("JOINED AT BOOTSTRAP {}:{}", address_vec[0], address_vec[1]);
         } else if s.starts_with("DISCOVER ") {
             let re = Regex::new(r"\d+").unwrap();
             let result: Option<Match> = re.find(&*s);
@@ -201,6 +196,7 @@ async fn garlemlia_console() {
             {
                 running_nodes[selected].garlic.lock().await.discover_proxies(count).await;
             }
+            println!("DISCOVERING PROXIES: RUN 'COLLECT PROXIES' TO SEE RESULTS");
         } else if s.starts_with("SEARCH ") {
             if s.starts_with("SEARCH OVERLAY ") {
                 let re = Regex::new(r"SEARCH OVERLAY (.+)").unwrap();
@@ -214,6 +210,7 @@ async fn garlemlia_console() {
                 {
                     running_nodes[selected].garlic.lock().await.search_overlay(file_name.parse().unwrap(), search_proxy_ids.clone(), search_proxy_ids.len() as u8).await;
                 }
+                println!("SEARCHING FOR FILE: RUN 'COLLECT SEARCHES' TO SEE RESULTS");
             } else if s.starts_with("SEARCH KADEMLIA ") {
                 let re = Regex::new(r"\d+").unwrap();
                 let result: Option<Match> = re.find(&*s);
@@ -224,30 +221,42 @@ async fn garlemlia_console() {
                 }
             }
         } else if s.starts_with("UPLOAD FILE ") {
-            let re = Regex::new(r"UPLOAD FILE (.+)").unwrap();
-            let result = re.captures(&*s);
-            let Some(file_info) = result else {
-                println!("NO FILE PATH GIVEN");
-                continue;
-            };
-            let file_name = file_info[1].to_string();
-            
-            let output_folder_name;
-            {
-                output_folder_name = running_nodes[selected].file_storage.lock().await.temp_chunk_data_path.clone();
-            }
+            let re = Regex::new(r#"^UPLOAD FILE (.+?)\s+(\d+)\s+([0-9]*\.?[0-9]+)$"#).unwrap();
 
-            let info = FileUpload::encrypt_file(Box::from(Path::new(&file_name)), Box::from(Path::new(&output_folder_name))).await.unwrap();
+            if let Some(cap) = re.captures(&*s) {
+                let file_name = &cap[1];
+                let num_split: usize = cap[2].parse().unwrap();
+                let rotation_time: f64 = cap[3].parse().unwrap();
 
-            let encrypted_file_name = format!("{}/{}.{}.enc", output_folder_name, info.name, info.file_type);
+                let output_folder_name;
+                {
+                    output_folder_name = running_nodes[selected].file_storage.lock().await.temp_chunk_data_path.clone();
+                }
 
-            let chunks_info = FileUpload::split_into_chunks(Box::from(Path::new(&encrypted_file_name)), 8).await.unwrap();
+                let info = FileUpload::encrypt_file(Box::from(Path::new(&file_name)), Box::from(Path::new(&output_folder_name))).await.unwrap();
 
-            let file_upload = FileUpload::new(info, chunks_info, 10000.0);
+                let encrypted_file_name = format!("{}/{}.{}.enc", output_folder_name, info.name, info.file_type);
 
-            {
-                let file_storage = running_nodes[selected].file_storage.lock().await.clone();
-                running_nodes[selected].garlic.lock().await.store_file(file_upload, search_proxy_ids.clone(), file_proxy_ids.clone(), file_storage).await;
+                let chunks_info = FileUpload::split_into_chunks(Box::from(Path::new(&encrypted_file_name)), num_split).await.unwrap();
+
+                let file_upload = FileUpload::new(info, chunks_info, rotation_time);
+
+                {
+                    let file_storage = running_nodes[selected].file_storage.lock().await.clone();
+                    running_nodes[selected].garlic.lock().await.store_file(file_upload.clone(), search_proxy_ids.clone(), file_proxy_ids.clone(), file_storage).await;
+                }
+
+                sleep(Duration::from_secs(5)).await;
+
+                for chunk in file_upload.chunks {
+                    let chunk_file_name = hex::encode(chunk.chunk_id.to_big_endian());
+
+                    let chunk_file_location = format!("{}/{}", output_folder_name, chunk_file_name);
+
+                    let _chunk_delete = fs::remove_file(chunk_file_location.clone()).await;
+                }
+            } else {
+                println!("PLEASE ENTER 'UPLOAD FILE (file_path) (total_splits) (rotation_time as f64 where 1.0 = 1 hour)'");
             }
         } else if s.starts_with("GET FILE INFO ") {
             let re = Regex::new(r"\d+").unwrap();
@@ -429,6 +438,8 @@ async fn garlemlia_console() {
             let port: u16 = result.map(|m| m.as_str().parse::<u16>().unwrap()).unwrap_or(0);
 
             running_nodes.push(create_test_node(u256_random(), port).await);
+            selected = running_nodes.len() - 1;
+            println!("CREATED NODE WITH PORT {} AND SELECTED AT {}", port, selected);
         } else if s.starts_with("INIT ") {
             if s.starts_with("INIT TEST") {
                 match load_simulated_nodes("./test_nodes.json").await {
@@ -440,7 +451,7 @@ async fn garlemlia_console() {
                         println!("Started {} simulated nodes!", nodes.len());
                     }
                     Err(e) => {
-                        eprintln!("Error loading nodes: {}", e);
+                        eprintln!("ERROR LOADING NODES: {}", e);
                         continue;
                     },
                 }
@@ -479,7 +490,7 @@ async fn garlemlia_console() {
                     file_proxy_ids.push(proxies_show[proxies_show.len() - num].clone().sequence_number);
                 }
 
-                let file_name = "./file_example.png";
+                let file_name = "./JWST.tif";
 
                 let output_folder_name;
                 {
@@ -490,7 +501,7 @@ async fn garlemlia_console() {
 
                 let encrypted_file_name = format!("{}/{}.{}.enc", output_folder_name, info.name, info.file_type);
 
-                let chunks_info = FileUpload::split_into_chunks(Box::from(Path::new(&encrypted_file_name)), 8).await.unwrap();
+                let chunks_info = FileUpload::split_into_chunks(Box::from(Path::new(&encrypted_file_name)), 150).await.unwrap();
 
                 let file_upload = FileUpload::new(info, chunks_info, 10000.0);
 
@@ -544,7 +555,7 @@ async fn garlemlia_console() {
                         println!("Started {} simulated nodes!", nodes.len());
                     }
                     Err(e) => {
-                        eprintln!("Error loading nodes: {}", e);
+                        eprintln!("ERROR LOADING NODES: {}", e);
                         continue;
                     },
                 }
@@ -560,6 +571,27 @@ async fn garlemlia_console() {
                 running_nodes[selected].join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
                 {
                     println!("Joined network at address {} :: ROUTING TABLE :: {} ", test_node_sock1.to_string(), running_nodes[selected].routing_table.lock().await.flat_nodes().await.len());
+                }
+
+                {
+                    running_nodes[selected].garlic.lock().await.discover_proxies(60).await;
+                }
+
+                sleep(Duration::from_secs(3)).await;
+
+                {
+                    proxies_show = running_nodes[selected].garlic.lock().await.get_proxies();
+                    proxies_show.sort_by_key(|p| p.neighbor_1_hops + p.neighbor_2_hops);
+                }
+
+                for num in 0..3 {
+                    selected_search_proxies.push(proxies_show[num].clone());
+                    search_proxy_ids.push(proxies_show[num].clone().sequence_number);
+                }
+
+                for num in 1..5 {
+                    selected_file_proxies.push(proxies_show[proxies_show.len() - num].clone());
+                    file_proxy_ids.push(proxies_show[proxies_show.len() - num].clone().sequence_number);
                 }
             }
         } else if s.starts_with("QUIT") {

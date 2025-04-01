@@ -726,14 +726,28 @@ impl Garlemlia {
                                             {
                                                 yeet_node = self_node.lock().await.clone();
                                             }
-                                            GarlemliaFunctions::store_value(get_global_socket().unwrap(), yeet_node,
-                                                                            Arc::clone(&routing_table),
-                                                                            Arc::clone(&message_handler),
-                                                                            Arc::clone(&data_store),
-                                                                            Arc::clone(&garlic),
-                                                                            Arc::clone(&file_storage),
-                                                                            data,
-                                                                            2).await;
+                                            match data.clone() {
+                                                GarlemliaStoreRequest::FileName { .. } => {
+                                                    GarlemliaFunctions::store_value(get_global_socket().unwrap(), yeet_node,
+                                                                                    Arc::clone(&routing_table),
+                                                                                    Arc::clone(&message_handler),
+                                                                                    Arc::clone(&data_store),
+                                                                                    Arc::clone(&garlic),
+                                                                                    Arc::clone(&file_storage),
+                                                                                    data,
+                                                                                    20).await;
+                                                }
+                                                _ => {
+                                                    GarlemliaFunctions::store_value(get_global_socket().unwrap(), yeet_node,
+                                                                                    Arc::clone(&routing_table),
+                                                                                    Arc::clone(&message_handler),
+                                                                                    Arc::clone(&data_store),
+                                                                                    Arc::clone(&garlic),
+                                                                                    Arc::clone(&file_storage),
+                                                                                    data,
+                                                                                    2).await;
+                                                }
+                                            }
                                         }
                                         CloveMessage::Response { data, .. } => {
                                             match data {
@@ -770,15 +784,27 @@ impl Garlemlia {
                             }
                         }
 
-                        GarlemliaMessage::SearchFile { request_id, proxy_id, search_term, public_key, .. } => {
-                            let mut rt = routing_table.lock().await;
-                            rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
-                            let response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
-                            
-                            let new_clove_msg = CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key };
-
+                        GarlemliaMessage::SearchFile { request_id, proxy_id, search_term, public_key, ttl, .. } => {
+                            let already_checked;
                             {
-                                garlic.lock().await.run_proxy_message(new_clove_msg, response_data).await;
+                                let mut garlic_locked = garlic.lock().await;
+                                already_checked = garlic_locked.has_search_checked(request_id.clone());
+
+                                if !already_checked {
+                                    garlic_locked.check_search(request_id.clone());
+                                }
+                            }
+
+                            if !already_checked {
+                                let mut rt = routing_table.lock().await;
+                                rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
+                                let response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
+
+                                let new_clove_msg = CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key, ttl };
+
+                                {
+                                    garlic.lock().await.run_proxy_message(new_clove_msg, response_data).await;
+                                }
                             }
                         }
 
