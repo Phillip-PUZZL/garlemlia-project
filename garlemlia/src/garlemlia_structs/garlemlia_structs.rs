@@ -839,26 +839,10 @@ impl GarlemliaData {
         }
     }
 
-    pub fn get_chunk_info(&self, mut data: Vec<u8>, request_id: U256, sender: Node) -> Option<GarlemliaResponse> {
+    pub fn get_chunk_info(&self, data: Vec<u8>, request_id: U256, sender: Node) -> Option<GarlemliaResponse> {
         match self {
             GarlemliaData::FileChunk { id, size } => {
-                let mut start_index = 0;
-                let increase_by = SOCKET_FILE_DATA_MAX;
-
-                let mut total_parts = 0;
-                while data.len() > 0 {
-                    let mut part_data = vec![];
-                    for _ in start_index..start_index + increase_by {
-                        if data.len() == 0 {
-                            break;
-                        }
-
-                        part_data.push(data.remove(0));
-                    }
-
-                    total_parts += 1;
-                    start_index += increase_by;
-                }
+                let total_parts = (data.len() + SOCKET_FILE_DATA_MAX - 1) / SOCKET_FILE_DATA_MAX;
 
                 Some(GarlemliaResponse::FileChunkInfo {
                     request_id,

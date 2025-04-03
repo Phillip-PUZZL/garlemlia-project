@@ -370,7 +370,7 @@ impl GarlemliaFunctions {
                                   chunks: Vec<GarlemliaResponse>,
                                   requester: SocketAddr) {
         for chunk in chunks {
-            sleep(Duration::from_millis(15)).await;
+            sleep(Duration::from_millis(100)).await;
             let response = GarlemliaMessage::Garlic {
                 sender: self_node.clone(),
                 msg: GarlicMessage::FileChunkPart {
@@ -701,27 +701,23 @@ impl GarlemliaFunctions {
                                             }
 
                                             if send_and_process {
-                                                let socket_clone = Arc::clone(&socket);
-                                                let self_node_clone = self_node.clone();
-                                                let message_handler_clone = Arc::clone(&message_handler);
-
                                                 {
                                                     garlic.lock().await.send_chunk_part(data.get_request_id().unwrap(), data, false).await;
                                                 }
 
-                                                tokio::spawn(async move {
-                                                    let download_chunk_msg = GarlemliaMessage::DownloadFileChunk {
-                                                        sender: self_node_clone.clone(),
-                                                        request: GarlemliaFindRequest::Key { id: key, request_id: request_id.request_id }
-                                                    };
+                                                let download_chunk_msg = GarlemliaMessage::DownloadFileChunk {
+                                                    sender: self_node.clone(),
+                                                    request: GarlemliaFindRequest::Key { id: key, request_id: request_id.request_id }
+                                                };
 
-                                                    {
-                                                        if let Err(e) = message_handler_clone.send_no_recv(&Arc::from(Arc::clone(&socket_clone)), self_node_clone, &sender.address, &download_chunk_msg).await {
-                                                            eprintln!("Failed to send IsAlive to {}: {:?}", sender.address, e);
-                                                        }
+                                                {
+                                                    if let Err(e) = message_handler.send_no_recv(&Arc::from(Arc::clone(&socket)), self_node.clone(), &sender.address, &download_chunk_msg).await {
+                                                        eprintln!("Failed to send IsAlive to {}: {:?}", sender.address, e);
                                                     }
-                                                });
+                                                }
                                             }
+
+                                            response_data = None;
                                         }
                                         _ => {}
                                     }
@@ -862,7 +858,9 @@ impl GarlemliaFunctions {
                                                         data: parts_data[i].clone().data
                                                     };
 
-                                                    garlic.lock().await.send_chunk_part(data.get_request_id().unwrap(), response, remove_me).await;
+                                                    {
+                                                        garlic.lock().await.send_chunk_part(data.get_request_id().unwrap(), response, remove_me).await;
+                                                    }
 
                                                     if remove_me {
                                                         cpa.remove_proxy_chunk(chunk_id);
@@ -894,7 +892,9 @@ impl GarlemliaFunctions {
                                             if temp_chunk_info.parts_info.len() == temp_chunk_info.parts_count {
                                                 let _ = file_storage.lock().await.assemble_temp_chunk(chunk_id, temp_chunk_info.parts_count).await;
 
-                                                garlic.lock().await.file_chunk_downloaded(data.get_request_id().unwrap(), chunk_id, sender_node).await;
+                                                {
+                                                    garlic.lock().await.file_chunk_downloaded(data.get_request_id().unwrap(), chunk_id, sender_node).await;
+                                                }
                                             }
                                         }
                                     }
@@ -903,7 +903,6 @@ impl GarlemliaFunctions {
                                         if !cpa.already_has.contains_key(&data.get_chunk_id().unwrap()) {
                                             cpa.add_temp_chunk(data.get_file_chunk_info().unwrap());
                                             cpa.already_has.insert(data.get_chunk_id().unwrap(), data.get_request_id().unwrap());
-                                            println!("INITIATOR RECEIVED CHUNK INFO");
                                         }
                                     }
                                     _ => {}
