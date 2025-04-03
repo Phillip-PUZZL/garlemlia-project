@@ -23,7 +23,7 @@ async fn create_test_node(id: U256, port: u16) -> Garlemlia {
 
     let node = Garlemlia::new_with_details(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), simulated_to_gmessage(node_actual.address), get_global_socket().unwrap().clone(), public_key, private_key, Box::new(Path::new("./running_nodes_files"))).await;
 
-    add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic), Arc::clone(&node.file_storage))).await;
+    add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic), Arc::clone(&node.file_storage), Arc::clone(&node.chunk_part_associations))).await;
 
     node
 }
@@ -148,7 +148,6 @@ async fn garlemlia_console() {
                     {
                         SIM.lock().await.set_nodes(nodes.clone());
                     }
-                    simulated_nodes = nodes.clone();
                     println!("SIM LOADED");
                 }
                 Err(e) => {
@@ -270,6 +269,8 @@ async fn garlemlia_console() {
                 pending_downloads.push(request_id);
                 found_files[file_location as usize].set_request_id(request_id);
             }
+
+            println!("SEARCHING FOR FILE INFO: RUN 'COLLECT FILE INFO' TO SEE RESULTS");
         } else if s.starts_with("DOWNLOAD FILE ") {
             let re = Regex::new(r"\d+").unwrap();
             let result: Option<Match> = re.find(&*s);
@@ -425,7 +426,6 @@ async fn garlemlia_console() {
                     {
                         SIM.lock().await.set_nodes(nodes.clone());
                     }
-                    simulated_nodes = nodes.clone();
                 }
                 Err(e) => {
                     eprintln!("Error loading nodes: {}", e);
@@ -442,6 +442,13 @@ async fn garlemlia_console() {
             println!("CREATED NODE WITH PORT {} AND SELECTED AT {}", port, selected);
         } else if s.starts_with("INIT ") {
             if s.starts_with("INIT TEST") {
+                let sim_dir_path = Path::new("./simulated_nodes_files");
+
+                if sim_dir_path.exists() && sim_dir_path.is_dir() {
+                    fs::remove_dir_all(sim_dir_path).await.unwrap();
+                    println!("Old Simulated Nodes Folder Removed!");
+                }
+
                 match load_simulated_nodes("./test_nodes.json").await {
                     Ok(nodes) => {
                         {
@@ -530,13 +537,6 @@ async fn garlemlia_console() {
                 } else {
                     println!("Saved updated nodes to ./test_nodes_stored.json");
                 }
-
-                let mut metadata_loc = file_upload.metadata_location.clone();
-                metadata_loc.store();
-                let mut key_loc = file_upload.key_location.clone();
-                key_loc.store();
-
-                found_files.push(FileInfo::from(file_upload.name, file_upload.file_type, file_upload.size, file_upload.categories, metadata_loc.get_next(24, 1.0).unwrap(), key_loc.get_next(24, 1.0).unwrap()));
             } else {
                 let re = Regex::new(r"INIT (.+\.json)").unwrap();
                 let result = re.captures(&*s);

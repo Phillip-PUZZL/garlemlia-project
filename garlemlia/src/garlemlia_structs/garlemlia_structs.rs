@@ -72,6 +72,8 @@ pub const DEFAULT_K: usize = 20;
 pub const MAX_K: usize = 40;
 
 pub const LOOKUP_ALPHA: usize = 3;
+pub const SOCKET_DATA_MAX: usize = 49152;
+pub const SOCKET_FILE_DATA_MAX: usize = 32768;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Node {
@@ -837,14 +839,67 @@ impl GarlemliaData {
         }
     }
 
-    pub fn get_chunk_response(&self, data: Vec<u8>) -> Option<GarlemliaResponse> {
+    pub fn get_chunk_info(&self, mut data: Vec<u8>, request_id: U256, sender: Node) -> Option<GarlemliaResponse> {
         match self {
             GarlemliaData::FileChunk { id, size } => {
-                Some(GarlemliaResponse::FileChunk {
+                let mut start_index = 0;
+                let increase_by = SOCKET_FILE_DATA_MAX;
+
+                let mut total_parts = 0;
+                while data.len() > 0 {
+                    let mut part_data = vec![];
+                    for _ in start_index..start_index + increase_by {
+                        if data.len() == 0 {
+                            break;
+                        }
+
+                        part_data.push(data.remove(0));
+                    }
+
+                    total_parts += 1;
+                    start_index += increase_by;
+                }
+
+                Some(GarlemliaResponse::FileChunkInfo {
+                    request_id,
                     chunk_id: id.clone(),
                     chunk_size: size.clone(),
-                    data,
+                    parts_count: total_parts,
+                    sender
                 })
+            },
+            _ => None
+        }
+    }
+
+    pub fn get_chunk_responses(&self, mut data: Vec<u8>, request_id: U256) -> Option<Vec<GarlemliaResponse>> {
+        match self {
+            GarlemliaData::FileChunk { id, .. } => {
+                let mut responses = vec![];
+
+                let part_size = SOCKET_FILE_DATA_MAX;
+
+                let mut total_parts = 0;
+                while data.len() > 0 {
+                    let part_data: Vec<u8>;
+                    if part_size > data.len() {
+                        part_data = data.drain(..).collect();
+                    } else {
+                        part_data = data.drain(0..part_size).collect();
+                    }
+
+                    responses.push(GarlemliaResponse::ChunkPart {
+                        request_id,
+                        chunk_id: id.clone(),
+                        index: total_parts,
+                        part_size: part_data.len(),
+                        data: part_data
+                    });
+
+                    total_parts += 1;
+                }
+
+                Some(responses)
             },
             _ => None
         }
@@ -865,7 +920,8 @@ pub enum GarlemliaStoreRequest {
     FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: RotatingHash, key_location: RotatingHash },
     MetaData { id: U256, file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
     FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location: RotatingHash },
-    FileChunk { id: U256, chunk_size: usize, data: Vec<u8> }
+    FileChunkInfo { id: U256, request_id: U256, chunk_size: usize, parts_count: usize },
+    FileChunkPart { id: U256, index: usize, part_size: usize, data: Vec<u8> }
 }
 
 impl GarlemliaStoreRequest {
@@ -876,7 +932,8 @@ impl GarlemliaStoreRequest {
             GarlemliaStoreRequest::FileName { id, .. } => *id,
             GarlemliaStoreRequest::MetaData { id, .. } => *id,
             GarlemliaStoreRequest::FileKey { id, .. } => *id,
-            GarlemliaStoreRequest::FileChunk { id, .. } => *id,
+            GarlemliaStoreRequest::FileChunkInfo { id, .. } => *id,
+            GarlemliaStoreRequest::FileChunkPart { id, .. } => *id,
         }
     }
 
@@ -917,7 +974,7 @@ impl GarlemliaStoreRequest {
                     key_location: key_location.clone()
                 })
             }
-            GarlemliaStoreRequest::FileChunk { id, chunk_size, .. } => {
+            GarlemliaStoreRequest::FileChunkInfo { id, chunk_size, .. } => {
                 Some(GarlemliaData::FileChunk {
                     id: id.clone(),
                     size: chunk_size.clone()
@@ -943,16 +1000,70 @@ impl GarlemliaStoreRequest {
         }
     }
 
-    pub fn chunk_get_data(&self) -> Option<Vec<u8>> {
+    pub fn get_chunk_part_data(&self) -> Option<Vec<u8>> {
         match self {
-            GarlemliaStoreRequest::FileChunk { data, .. } => Some(data.clone()),
+            GarlemliaStoreRequest::FileChunkPart { data, .. } => Some(data.clone()),
             _ => None
         }
     }
 
-    pub fn is_chunk(&self) -> bool {
+    pub fn get_chunk_part_index(&self) -> Option<usize> {
         match self {
-            GarlemliaStoreRequest::FileChunk { .. } => true,
+            GarlemliaStoreRequest::FileChunkPart { index, .. } => Some(index.clone()),
+            _ => None
+        }
+    }
+
+    pub fn get_file_chunk_info(&self) -> Option<FileChunkInfo> {
+        match self {
+            GarlemliaStoreRequest::FileChunkInfo { id, request_id, chunk_size, parts_count } => {
+                Some(FileChunkInfo {
+                    request_id: request_id.clone(),
+                    chunk_id: id.clone(),
+                    chunk_size: chunk_size.clone(),
+                    parts_count: parts_count.clone(),
+                    parts_info: vec![],
+                })
+            }
+            _ => None
+        }
+    }
+
+    pub fn get_chunk_part_info(&self) -> Option<ChunkPartInfo> {
+        match self {
+            GarlemliaStoreRequest::FileChunkPart { part_size, index, .. } => {
+                Some(ChunkPartInfo {
+                    index: index.clone(),
+                    size: part_size.clone()
+                })
+            }
+            _ => None
+        }
+    }
+
+    pub fn get_proxy_chunk_part_info(&self) -> Option<ProxyChunkPartInfo> {
+        match self {
+            GarlemliaStoreRequest::FileChunkPart { part_size, index, data, .. } => {
+                Some(ProxyChunkPartInfo {
+                    index: index.clone(),
+                    size: part_size.clone(),
+                    data: data.clone()
+                })
+            }
+            _ => None
+        }
+    }
+
+    pub fn is_chunk_part(&self) -> bool {
+        match self {
+            GarlemliaStoreRequest::FileChunkPart { .. } => true,
+            _ => false
+        }
+    }
+
+    pub fn is_chunk_info(&self) -> bool {
+        match self {
+            GarlemliaStoreRequest::FileChunkInfo { .. } => true,
             _ => false
         }
     }
@@ -960,15 +1071,22 @@ impl GarlemliaStoreRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaFindRequest {
-    Key { id: U256 },
+    Key { id: U256, request_id: U256 },
     Validator { id: U256, proxy_id: U256 }
 }
 
 impl GarlemliaFindRequest {
     pub fn get_id(&self) -> U256 {
         match self {
-            GarlemliaFindRequest::Key { id } => *id,
+            GarlemliaFindRequest::Key { id, .. } => *id,
             GarlemliaFindRequest::Validator { id, .. } => *id,
+        }
+    }
+
+    pub fn get_request_id(&self) -> Option<U256> {
+        match self {
+            GarlemliaFindRequest::Key { request_id, .. } => Some(*request_id),
+            _ => None
         }
     }
 }
@@ -980,8 +1098,9 @@ pub enum GarlemliaResponse {
     FileName { name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: Vec<HashLocation>, key_location: Vec<HashLocation> },
     MetaData { file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
     FileKey { enc_file_id: U256, decryption_key: String },
-    FileChunk { chunk_id: U256, chunk_size: usize, data: Vec<u8> },
-    FileChunkInfo { chunk_id: U256, chunk_size: usize }
+    ChunkPart { request_id: U256, chunk_id: U256, part_size: usize, index: usize, data: Vec<u8> },
+    ChunkPartInfo { chunk_id: U256, part_size: usize, index: usize },
+    FileChunkInfo { request_id: U256, chunk_id: U256, chunk_size: usize, parts_count: usize, sender: Node }
 }
 
 impl GarlemliaResponse {
@@ -1009,6 +1128,120 @@ impl GarlemliaResponse {
             }
         }
     }
+
+    pub fn is_file_chunk_info(&self) -> bool {
+        match self {
+            GarlemliaResponse::FileChunkInfo { .. } => true,
+            _ => false
+        }
+    }
+
+    pub fn is_chunk_part(&self) -> bool {
+        match self {
+            GarlemliaResponse::ChunkPart { .. } => true,
+            _ => false
+        }
+    }
+
+    pub fn is_chunk_part_info(&self) -> bool {
+        match self {
+            GarlemliaResponse::ChunkPartInfo { .. } => true,
+            _ => false
+        }
+    }
+
+    pub fn get_chunk_id(&self) -> Option<U256> {
+        match self {
+            GarlemliaResponse::FileChunkInfo { chunk_id, .. } => Some(*chunk_id),
+            GarlemliaResponse::ChunkPart { chunk_id, .. } => Some(*chunk_id),
+            GarlemliaResponse::ChunkPartInfo { chunk_id, .. } => Some(*chunk_id),
+            _ => None
+        }
+    }
+
+    pub fn get_request_id(&self) -> Option<U256> {
+        match self {
+            GarlemliaResponse::FileChunkInfo { request_id, .. } => Some(*request_id),
+            GarlemliaResponse::ChunkPart { request_id, .. } => Some(*request_id),
+            _ => None
+        }
+    }
+
+    pub fn get_chunk_part_index(&self) -> Option<usize> {
+        match self {
+            GarlemliaResponse::ChunkPart { index, .. } => Some(*index),
+            GarlemliaResponse::ChunkPartInfo { index, .. } => Some(*index),
+            _ => None
+        }
+    }
+
+    pub fn get_file_chunk_info(&self) -> Option<FileChunkInfo> {
+        match self {
+            GarlemliaResponse::FileChunkInfo { request_id, chunk_id, chunk_size, parts_count, .. } => {
+                Some(FileChunkInfo {
+                    request_id: request_id.clone(),
+                    chunk_id: chunk_id.clone(),
+                    chunk_size: chunk_size.clone(),
+                    parts_count: parts_count.clone(),
+                    parts_info: vec![],
+                })
+            }
+            _ => None
+        }
+    }
+
+    pub fn get_proxy_file_chunk_info(&self) -> Option<ProxyFileChunkInfo> {
+        match self {
+            GarlemliaResponse::FileChunkInfo { request_id, chunk_id, chunk_size, parts_count, .. } => {
+                Some(ProxyFileChunkInfo {
+                    request_id: request_id.clone(),
+                    chunk_id: chunk_id.clone(),
+                    chunk_size: chunk_size.clone(),
+                    parts_count: parts_count.clone(),
+                    parts_info: vec![],
+                })
+            }
+            _ => None
+        }
+    }
+
+    pub fn get_chunk_part_info(&self) -> Option<ChunkPartInfo> {
+        match self {
+            GarlemliaResponse::ChunkPart { part_size, index, .. } => {
+                Some(ChunkPartInfo {
+                    index: index.clone(),
+                    size: part_size.clone()
+                })
+            }
+            GarlemliaResponse::ChunkPartInfo { part_size, index, .. } => {
+                Some(ChunkPartInfo {
+                    index: index.clone(),
+                    size: part_size.clone()
+                })
+            }
+            _ => None
+        }
+    }
+
+    pub fn get_proxy_chunk_part_info(&self) -> Option<ProxyChunkPartInfo> {
+        match self {
+            GarlemliaResponse::ChunkPart { part_size, index, data, .. } => {
+                Some(ProxyChunkPartInfo {
+                    index: index.clone(),
+                    size: part_size.clone(),
+                    data: data.clone()
+                })
+            }
+            _ => None
+        }
+    }
+
+    pub fn get_chunk_part_data(&self) -> Option<Vec<u8>> {
+        match self {
+            GarlemliaResponse::ChunkPart { data, .. } => Some(data.clone()),
+            _ => None
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1021,6 +1254,7 @@ pub enum GarlemliaMessage {
     Ping { sender: Node },
     Pong { sender: Node },
     SearchFile { request_id: CloveRequestID, proxy_id: U256, search_term: String, public_key: String, sender: Node, ttl: u8 },
+    DownloadFileChunk { request: GarlemliaFindRequest, sender: Node },
     AgreeAlt { alt_sequence_number: U256, sender: Node },
     Stop { }
 }
@@ -1036,6 +1270,7 @@ impl GarlemliaMessage {
             GarlemliaMessage::Ping { sender} => sender.id.clone(),
             GarlemliaMessage::Pong { sender, .. } => sender.id.clone(),
             GarlemliaMessage::SearchFile { sender, ..} => sender.id.clone(),
+            GarlemliaMessage::DownloadFileChunk { sender, .. } => sender.id.clone(),
             GarlemliaMessage::AgreeAlt { sender, .. } => sender.id.clone(),
             GarlemliaMessage::Stop {} => U256::from(0)
         }
@@ -1051,6 +1286,7 @@ impl GarlemliaMessage {
             GarlemliaMessage::Ping { sender} => Some(sender.clone()),
             GarlemliaMessage::Pong { sender, .. } => Some(sender.clone()),
             GarlemliaMessage::SearchFile { sender, ..} => Some(sender.clone()),
+            GarlemliaMessage::DownloadFileChunk { sender, .. } => Some(sender.clone()),
             GarlemliaMessage::AgreeAlt { sender, .. } => Some(sender.clone()),
             GarlemliaMessage::Stop {} => None
         }
@@ -1147,11 +1383,15 @@ pub enum CloveMessage {
         proxy_id: U256,
         clove_1: Clove,
         clove_2: Clove
+    },
+    FileChunkPart {
+        request_id: CloveRequestID,
+        data: GarlemliaResponse
     }
 }
 
 impl CloveMessage {
-    pub async fn file_upload(file_info: FileUpload, file_storage: FileStorage, request_id: Option<U256>) -> Vec<FileCloveMessage> {
+    pub async fn file_metadata_upload(file_info: FileUpload, request_id: Option<U256>) -> Vec<FileCloveMessage> {
         let mut file_messages = vec![];
 
         file_messages.push(FileCloveMessage { is_file_chunk: false, message: CloveMessage::Store { request_id: CloveRequestID::new(request_id.unwrap_or(u256_random()), 0), data: GarlemliaStoreRequest::FileName {
@@ -1178,18 +1418,52 @@ impl CloveMessage {
             key_location: file_info.key_location
         }}});
 
-        let mut request_id_index = 3;
-        for chunk in file_info.chunks {
-            let chunk_data = file_storage.get_temp_chunk(chunk.chunk_id).await.unwrap();
-            file_messages.push(FileCloveMessage { is_file_chunk: true, message: CloveMessage::Store { request_id: CloveRequestID::new(request_id.unwrap_or(u256_random()), request_id_index), data: GarlemliaStoreRequest::FileChunk {
+        file_messages
+    }
+
+    pub async fn file_chunk_to_upload(chunk: ChunkInfo, file_storage: FileStorage, request_id: Option<U256>) -> Vec<FileCloveMessage> {
+        let mut chunk_part_messages = vec![];
+
+        let yeet_request_id = request_id.unwrap_or(u256_random());
+
+        let request_id_index = rand::random::<u64>();
+
+        let mut chunk_data = file_storage.get_temp_chunk(chunk.chunk_id).await.unwrap();
+        let part_size = SOCKET_FILE_DATA_MAX;
+
+        let mut parts_file_messages: Vec<FileCloveMessage> = vec![];
+
+        let mut total_parts = 0;
+        while chunk_data.len() > 0 {
+            let part_data: Vec<u8>;
+            if part_size > chunk_data.len() {
+                part_data = chunk_data.drain(..).collect();
+            } else {
+                part_data = chunk_data.drain(0..part_size).collect();
+            }
+
+            parts_file_messages.push(FileCloveMessage { is_file_chunk: true, message: CloveMessage::Store { request_id: CloveRequestID::new(yeet_request_id, request_id_index + 1 + total_parts), data: GarlemliaStoreRequest::FileChunkPart {
                 id: chunk.chunk_id,
-                chunk_size: chunk.size,
-                data: chunk_data
+                index: total_parts as usize,
+                part_size: part_data.len(),
+                data: part_data
             }}});
-            request_id_index += 1;
+
+            total_parts += 1;
         }
 
-        file_messages
+        chunk_part_messages.push(FileCloveMessage { is_file_chunk: true, message: CloveMessage::Store { request_id: CloveRequestID::new(yeet_request_id, request_id_index), data: GarlemliaStoreRequest::FileChunkInfo {
+            id: chunk.chunk_id,
+            request_id: yeet_request_id,
+            chunk_size: chunk.size,
+            parts_count: total_parts as usize
+        }}});
+
+        for item in parts_file_messages {
+            chunk_part_messages.push(item);
+        }
+
+        chunk_part_messages
     }
 
     pub fn request_id(&self) -> Option<CloveRequestID> {
@@ -1201,6 +1475,7 @@ impl CloveMessage {
             CloveMessage::SearchGarlemlia { request_id, .. } => {Some(request_id.clone())}
             CloveMessage::Response { request_id, .. } => {Some(request_id.clone())}
             CloveMessage::ResponseWithValidator { request_id, .. } => {Some(request_id.clone())}
+            CloveMessage::FileChunkPart { request_id, .. } => {Some(request_id.clone())}
         }
     }
 
@@ -1213,6 +1488,7 @@ impl CloveMessage {
             CloveMessage::SearchGarlemlia { .. } => {None}
             CloveMessage::Response { .. } => {None}
             CloveMessage::ResponseWithValidator { proxy_id, .. } => {Some(proxy_id.clone())}
+            CloveMessage::FileChunkPart { .. } => {None}
         }
     }
 
@@ -1225,6 +1501,7 @@ impl CloveMessage {
             CloveMessage::SearchGarlemlia { .. } => {true}
             CloveMessage::Response { .. } => {true}
             CloveMessage::ResponseWithValidator { .. } => {true}
+            CloveMessage::FileChunkPart { .. } => {true}
         }
     }
 }
@@ -1267,6 +1544,10 @@ pub enum GarlicMessage {
         clove_1: Clove,
         clove_2: Clove
     },
+    FileChunkPart {
+        request_id: CloveRequestID,
+        data: GarlemliaResponse
+    }
 }
 
 impl GarlicMessage {
@@ -1280,6 +1561,7 @@ impl GarlicMessage {
             GarlicMessage::UpdateAlt { .. } => {U256::from(0)}
             GarlicMessage::UpdateAltNextOrLast { .. } => {U256::from(0)}
             GarlicMessage::ResponseDirect { .. } => {U256::from(0)}
+            GarlicMessage::FileChunkPart { .. } => {U256::from(0)}
         }
     }
 
@@ -1311,6 +1593,7 @@ impl GarlicMessage {
             GarlicMessage::UpdateAlt { .. } => {None}
             GarlicMessage::UpdateAltNextOrLast { .. } => {None}
             GarlicMessage::ResponseDirect { .. } => {None}
+            GarlicMessage::FileChunkPart { .. } => {None}
         }
     }
 
@@ -1325,5 +1608,196 @@ impl GarlicMessage {
             msg,
             sender
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessingCheck {
+    is_processing: bool
+}
+
+impl ProcessingCheck {
+    pub fn new(is_processing: bool) -> ProcessingCheck {
+        ProcessingCheck {
+            is_processing
+        }
+    }
+
+    pub fn check(&self) -> bool {
+        self.is_processing
+    }
+
+    pub fn set(&mut self, state: bool) {
+        self.is_processing = state;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChunkPartInfo {
+    pub index: usize,
+    pub size: usize
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyChunkPartInfo {
+    pub index: usize,
+    pub size: usize,
+    pub data: Vec<u8>
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileChunkInfo {
+    pub request_id: U256,
+    pub chunk_id: U256,
+    pub chunk_size: usize,
+    pub parts_count: usize,
+    pub parts_info: Vec<ChunkPartInfo>
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyFileChunkInfo {
+    pub request_id: U256,
+    pub chunk_id: U256,
+    pub chunk_size: usize,
+    pub parts_count: usize,
+    pub parts_info: Vec<ProxyChunkPartInfo>
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkPartAssociations {
+    store_chunks: Vec<FileChunkInfo>,
+    temp_chunks: Vec<FileChunkInfo>,
+    proxy_chunks: Vec<ProxyFileChunkInfo>,
+    pub already_has: HashMap<U256, U256>
+}
+
+impl ChunkPartAssociations {
+    pub fn new() -> ChunkPartAssociations {
+        ChunkPartAssociations {
+            store_chunks: vec![],
+            temp_chunks: vec![],
+            proxy_chunks: vec![],
+            already_has: HashMap::new()
+        }
+    }
+
+    pub fn add_store_chunk(&mut self, store_chunk: FileChunkInfo) {
+        self.store_chunks.push(store_chunk);
+    }
+
+    pub fn add_temp_chunk(&mut self, temp_chunk: FileChunkInfo) {
+        self.temp_chunks.push(temp_chunk);
+    }
+
+    pub fn add_proxy_chunk(&mut self, proxy_chunk: ProxyFileChunkInfo) {
+        self.proxy_chunks.push(proxy_chunk);
+    }
+
+    pub fn remove_store_chunk(&mut self, chunk_id: U256) {
+        for i in 0..self.store_chunks.len() {
+            if self.store_chunks[i].chunk_id == chunk_id {
+                self.store_chunks.remove(i);
+                break;
+            }
+        }
+    }
+
+    pub fn remove_temp_chunk(&mut self, temp_chunk_id: U256) {
+        for i in 0..self.temp_chunks.len() {
+            if self.temp_chunks[i].chunk_id == temp_chunk_id {
+                self.temp_chunks.remove(i);
+                break;
+            }
+        }
+    }
+
+    pub fn remove_proxy_chunk(&mut self, proxy_chunk_id: U256) {
+        for i in 0..self.proxy_chunks.len() {
+            if self.proxy_chunks[i].chunk_id == proxy_chunk_id {
+                self.proxy_chunks.remove(i);
+                break;
+            }
+        }
+    }
+
+    pub fn is_store_chunk(&self, chunk_id: U256) -> bool {
+        for i in 0..self.store_chunks.len() {
+            if self.store_chunks[i].chunk_id == chunk_id {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn is_temp_chunk(&self, chunk_id: U256) -> bool {
+        for i in 0..self.temp_chunks.len() {
+            if self.temp_chunks[i].chunk_id == chunk_id {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn is_proxy_chunk(&self, chunk_id: U256) -> bool {
+        for i in 0..self.proxy_chunks.len() {
+            if self.proxy_chunks[i].chunk_id == chunk_id {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn get_store_chunk_mut(&mut self, chunk_id: U256) -> Option<&mut FileChunkInfo> {
+        for i in 0..self.store_chunks.len() {
+            if self.store_chunks[i].chunk_id == chunk_id {
+                return Some(&mut self.store_chunks[i]);
+            }
+        }
+        None
+    }
+
+    pub fn get_temp_chunk_mut(&mut self, chunk_id: U256) -> Option<&mut FileChunkInfo> {
+        for i in 0..self.temp_chunks.len() {
+            if self.temp_chunks[i].chunk_id == chunk_id {
+                return Some(&mut self.temp_chunks[i]);
+            }
+        }
+        None
+    }
+
+    pub fn get_proxy_chunk_mut(&mut self, chunk_id: U256) -> Option<&mut ProxyFileChunkInfo> {
+        for i in 0..self.proxy_chunks.len() {
+            if self.proxy_chunks[i].chunk_id == chunk_id {
+                return Some(&mut self.proxy_chunks[i]);
+            }
+        }
+        None
+    }
+
+    pub fn get_store_chunk_request_id(&self, chunk_id: U256) -> Option<U256> {
+        for i in 0..self.store_chunks.len() {
+            if self.store_chunks[i].chunk_id == chunk_id {
+                return Some(self.store_chunks[i].request_id);
+            }
+        }
+        None
+    }
+
+    pub fn get_temp_chunk_request_id(&self, chunk_id: U256) -> Option<U256> {
+        for i in 0..self.temp_chunks.len() {
+            if self.temp_chunks[i].chunk_id == chunk_id {
+                return Some(self.temp_chunks[i].request_id);
+            }
+        }
+        None
+    }
+
+    pub fn get_proxy_chunk_request_id(&self, chunk_id: U256) -> Option<U256> {
+        for i in 0..self.proxy_chunks.len() {
+            if self.proxy_chunks[i].chunk_id == chunk_id {
+                return Some(self.proxy_chunks[i].request_id);
+            }
+        }
+        None
     }
 }

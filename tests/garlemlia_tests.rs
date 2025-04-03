@@ -1,5 +1,5 @@
 use garlemlia::garlemlia::garlemlia::Garlemlia;
-use garlemlia::garlemlia_structs::garlemlia_structs::{GMessage, GarlemliaFindRequest, GarlemliaMessageHandler, GarlemliaResponse, GarlemliaStoreRequest, Node, RoutingTable, DEFAULT_K};
+use garlemlia::garlemlia_structs::garlemlia_structs::{u256_random, GMessage, GarlemliaFindRequest, GarlemliaMessageHandler, GarlemliaResponse, GarlemliaStoreRequest, Node, RoutingTable, DEFAULT_K};
 use primitive_types::U256;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -147,7 +147,7 @@ async fn test_iterative_find_value() {
     // Create multiple nodes and bind them to real sockets
     let mut node1 = create_test_node(U256::from(1), 8001).await;
     let mut node2 = create_test_node(U256::from(2), 8002).await;
-    let mut node3 = create_test_node(U256::from(3), 8003).await;
+    let node3 = create_test_node(U256::from(3), 8003).await;
     let mut node4 = create_test_node(U256::from(4), 8004).await;
 
     let node3_info = node3.node.lock().await.clone();
@@ -165,7 +165,7 @@ async fn test_iterative_find_value() {
     sleep(Duration::from_secs(1)).await;
 
     // Attempt to retrieve the stored value from node4
-    let value = node4.iterative_find_value(Arc::clone(&node4.socket), GarlemliaFindRequest::Key { id: U256::from(2) }).await;
+    let value = node4.iterative_find_value(Arc::clone(&node4.socket), GarlemliaFindRequest::Key { id: U256::from(2), request_id: u256_random() }).await;
 
     node1.stop().await;
     node2.stop().await;

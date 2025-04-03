@@ -18,7 +18,7 @@ async fn create_test_node(id: U256, port: u16) -> Garlemlia {
 
     let mut node = Garlemlia::new_with_details(id, "127.0.0.1", port, RoutingTable::new(node_actual.clone()), SimulatedMessageHandler::create(0), get_global_socket().unwrap().clone(), public_key, private_key, Box::new(Path::new("./running_nodes_files"))).await;
 
-    add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic), Arc::clone(&node.file_storage))).await;
+    add_running(node.node.clone().lock().await.clone(), GarlemliaInfo::from(Arc::clone(&node.node), Arc::clone(&node.message_handler), Arc::clone(&node.routing_table), Arc::clone(&node.data_store), Arc::clone(&node.garlic), Arc::clone(&node.file_storage), Arc::clone(&node.chunk_part_associations))).await;
 
     node
 }
@@ -116,7 +116,7 @@ async fn simulated_node_store_test() {
             assert_eq!(store_nodes.len(), 2, "Should have stored in 2 nodes");
 
             // Perform search
-            let found_value_option = node2.iterative_find_value(Arc::clone(&node2.socket), GarlemliaFindRequest::Key { id: key }).await;
+            let found_value_option = node2.iterative_find_value(Arc::clone(&node2.socket), GarlemliaFindRequest::Key { id: key, request_id: u256_random() }).await;
             println!("Search Value");
             assert!(found_value_option.is_some(), "Did not find value");
             let found_value = found_value_option;

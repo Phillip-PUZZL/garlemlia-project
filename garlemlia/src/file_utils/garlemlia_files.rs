@@ -347,12 +347,42 @@ impl FileStorage {
         }
     }
 
-    pub async fn store_chunk(&self, id: U256, data: Vec<u8>) -> std::io::Result<bool> {
-        let chunk_path = Path::new(&self.chunk_data_path).join(hex::encode(id.to_big_endian()));
+    pub async fn store_chunk_part(&self, id: U256, index: usize, data: Vec<u8>) -> std::io::Result<bool> {
+        let chunk_path = Path::new(&self.chunk_data_path).join(format!("{}_{index}", hex::encode(id.to_big_endian())));
 
-        {
+        if !chunk_path.exists() {
             let mut chunk_file = File::create(&chunk_path).await?;
             chunk_file.write_all(&data).await?;
+        }
+
+        Ok(true)
+    }
+
+    pub async fn assemble_chunk(&self, id: U256, parts_count: usize) -> std::io::Result<bool> {
+        let chunk_path = Path::new(&self.chunk_data_path).join(format!("{}", hex::encode(id.to_big_endian())));
+
+        if !chunk_path.exists() {
+            let mut chunk_file = File::create(&chunk_path).await?;
+            for index in 0..parts_count {
+                let part_path = Path::new(&self.chunk_data_path).join(format!("{}_{index}", hex::encode(id.to_big_endian())));
+
+                if part_path.exists() {
+                    let mut part_file = File::open(&part_path).await?;
+
+                    let mut part_data = Vec::new();
+                    part_file.read_to_end(&mut part_data).await?;
+
+                    chunk_file.write_all(&part_data).await?;
+                }
+            }
+        }
+
+        for index in 0..parts_count {
+            let part_path = Path::new(&self.chunk_data_path).join(format!("{}_{index}", hex::encode(id.to_big_endian())));
+
+            if part_path.exists() {
+                fs::remove_file(&part_path).await?;
+            }
         }
 
         Ok(true)
@@ -369,12 +399,42 @@ impl FileStorage {
         Ok(chunk_data)
     }
 
-    pub async fn store_temp_chunk(&self, id: U256, data: Vec<u8>) -> std::io::Result<bool> {
-        let chunk_path = Path::new(&self.temp_chunk_data_path).join(hex::encode(id.to_big_endian()));
+    pub async fn store_temp_chunk_part(&self, id: U256, index: usize, data: Vec<u8>) -> std::io::Result<bool> {
+        let chunk_path = Path::new(&self.temp_chunk_data_path).join(format!("{}_{index}", hex::encode(id.to_big_endian())));
 
-        {
+        if !chunk_path.exists() {
             let mut chunk_file = File::create(&chunk_path).await?;
             chunk_file.write_all(&data).await?;
+        }
+
+        Ok(true)
+    }
+
+    pub async fn assemble_temp_chunk(&self, id: U256, parts_count: usize) -> std::io::Result<bool> {
+        let chunk_path = Path::new(&self.temp_chunk_data_path).join(format!("{}", hex::encode(id.to_big_endian())));
+
+        if !chunk_path.exists() {
+            let mut chunk_file = File::create(&chunk_path).await?;
+            for index in 0..parts_count {
+                let part_path = Path::new(&self.temp_chunk_data_path).join(format!("{}_{index}", hex::encode(id.to_big_endian())));
+
+                if part_path.exists() {
+                    let mut part_file = File::open(&part_path).await?;
+
+                    let mut part_data = Vec::new();
+                    part_file.read_to_end(&mut part_data).await?;
+
+                    chunk_file.write_all(&part_data).await?;
+                }
+            }
+        }
+
+        for index in 0..parts_count {
+            let part_path = Path::new(&self.temp_chunk_data_path).join(format!("{}_{index}", hex::encode(id.to_big_endian())));
+
+            if part_path.exists() {
+                fs::remove_file(&part_path).await?;
+            }
         }
 
         Ok(true)
