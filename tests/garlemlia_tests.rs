@@ -26,13 +26,11 @@ async fn test_iterative_find_node() {
     let node3_addr = node3.node.lock().await.address;
     let node2_info = node2.node.lock().await.clone();
 
-    node1.join_network(Arc::clone(&node1.socket), &node3_addr).await;
-    node2.join_network(Arc::clone(&node2.socket), &node3_addr).await;
+    node1.join_network_no_refresh(Arc::clone(&node1.socket), &node3_addr).await;
+    node2.join_network_no_refresh(Arc::clone(&node2.socket), &node3_addr).await;
 
     // Perform lookup
     let found_nodes = node1.iterative_find_node(Arc::clone(&node1.socket), U256::from(2)).await;
-
-    sleep(Duration::from_secs(2)).await; // Allow time for replication
 
     node1.stop().await;
     node2.stop().await;
@@ -154,9 +152,9 @@ async fn test_iterative_find_value() {
     let node1_info = node1.node.lock().await.clone();
 
     // Let nodes join the network
-    node4.join_network(Arc::clone(&node4.socket), &node1_info.address).await;
-    node1.join_network(Arc::clone(&node1.socket), &node3_info.address).await;
-    node2.join_network(Arc::clone(&node2.socket), &node1_info.address).await;
+    node4.join_network_no_refresh(Arc::clone(&node4.socket), &node1_info.address).await;
+    node1.join_network_no_refresh(Arc::clone(&node1.socket), &node3_info.address).await;
+    node2.join_network_no_refresh(Arc::clone(&node2.socket), &node1_info.address).await;
 
     sleep(Duration::from_secs(1)).await;
 

@@ -355,6 +355,10 @@ impl RoutingTable {
             .position(|&i| i >= target_bucket)
             .unwrap_or(bucket_indices.len().saturating_sub(1));
 
+        if bucket_indices.len() < 1 {
+            return candidates;
+        }
+
         // Add nodes from the bucket that contains the target (if it exists)
         if let Some(bucket) = buckets.get(&bucket_indices[pos]) {
             candidates.extend(bucket.nodes.iter().cloned());

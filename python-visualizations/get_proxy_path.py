@@ -15,7 +15,7 @@ def visualize_routes_with_graphviz(logfile, root_node="127.0.0.1:6000"):
 
     # Regex patterns
     forward_pattern = re.compile(
-        r"FORWARD\s+([\w\d]+)\[(\d+)\]\s+::\s+(127\.0\.0\.1:\d+)\s*->\s*(127\.0\.0\.1:\d+)"
+        r"FINDPROXY\s+([\w\d]+)\[(\d+)\]\s+::\s+(127\.0\.0\.1:\d+)\s*->\s*(127\.0\.0\.1:\d+)"
     )
     proxy_pattern = re.compile(r"PROXY\s+::\s+(127\.0\.0\.1:\d+)")
     not_forward_pattern = re.compile(

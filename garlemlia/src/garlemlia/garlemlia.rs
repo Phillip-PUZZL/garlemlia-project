@@ -1379,8 +1379,56 @@ impl Garlemlia {
         }
 
         if response.is_ok() {
+            match response.unwrap() {
+                GarlemliaMessage::Response { nodes, .. } => {
+                    for node in nodes {
+                        if node.id != self_node.id {
+                            self.routing_table.lock().await.add_node(Arc::clone(&self.message_handler), node, &*socket_clone.clone()).await;
+                        }
+                    }
+                }
+                _ => {}
+            }
+
             self.iterative_find_node(socket_clone.clone(), self_node.id).await;
             self.refresh_buckets(socket_clone).await;
+        } else {
+            println!("FAILED TO JOIN NETWORK");
+        }
+    }
+
+    pub async fn join_network_no_refresh(&mut self, socket: Arc<UdpSocket>, target: &SocketAddr) {
+        let self_node = self.get_node().await;
+        let socket_clone = Arc::clone(&socket);
+        let message = GarlemliaMessage::FindNode {
+            id: self_node.id,
+            sender: self_node.clone(),
+        };
+
+        {
+            if let Err(e) = self.message_handler.send(&socket, self_node.clone(), &target, &message).await {
+                eprintln!("Failed to send FindNode to {}: {:?}", target, e);
+            }
+        }
+
+        let response;
+        {
+            response = self.message_handler.recv(200, &target).await;
+        }
+
+        if response.is_ok() {
+            match response.unwrap() {
+                GarlemliaMessage::Response { nodes, .. } => {
+                    for node in nodes {
+                        if node.id != self_node.id {
+                            self.routing_table.lock().await.add_node(Arc::clone(&self.message_handler), node, &*socket_clone.clone()).await;
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            self.iterative_find_node(socket_clone.clone(), self_node.id).await;
         } else {
             println!("FAILED TO JOIN NETWORK");
         }

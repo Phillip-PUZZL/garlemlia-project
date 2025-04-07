@@ -13,9 +13,10 @@ class TreeNode:
         self.left = None
         self.right = None
 
+
 def insert(root, bits):
     """
-    Insert a single binary string (e.g., 128 bits) into the tree.
+    Insert a single binary string (e.g., 256 bits) into the tree.
     Each node is labeled by the prefix that led there.
     """
     current = root
@@ -31,6 +32,7 @@ def insert(root, bits):
                 current.right = TreeNode(label=prefix)
             current = current.right
 
+
 def build_tree(node_ids):
     """
     Build a binary tree from a list of binary strings (node_ids).
@@ -40,6 +42,7 @@ def build_tree(node_ids):
     for bits in node_ids:
         insert(root, bits)
     return root
+
 
 def tree_to_graph(root):
     """
@@ -80,7 +83,7 @@ def count_leading_zeros(n):
     """
     if n == 0:
         return 0
-    binary_representation = bin(n)[2:].zfill(128)  # Remove "0b" prefix
+    binary_representation = bin(n)[2:].zfill(256)  # Remove "0b" prefix
     count = 0
     for bit in binary_representation:
         if bit == '0':
@@ -96,7 +99,7 @@ def bucket_index(node_id, check_node_id):
     if xor_distance == 0:
         return 0
 
-    return 127 - count_leading_zeros(xor_distance)
+    return 255 - count_leading_zeros(xor_distance)
 
 
 def generate_colormap(N):
@@ -137,7 +140,7 @@ def compress_and_color(
     prefix_to_compressed = {}   # Map original prefix -> compressed node ID
     global_idx = 0             # to create short names like n0, n1, etc.
 
-    colors = generate_colormap(128)
+    colors = generate_colormap(256)
 
     def dfs_compress(prefix, parent_prefix):
         """
@@ -222,12 +225,15 @@ def compress_and_color(
 
     return new_g
 
+
 def draw_compressed_tree(g, title="Compressed Tree"):
     """
     Draw the compressed graph top-to-bottom, with:
       - node label from 'display_label'
       - color from 'node_color'
     """
+    plt.figure(figsize=(18, 12), dpi=300)
+
     pos = graphviz_layout(g, prog='dot', args='-Grankdir=TB')
 
     labels = {}
@@ -238,25 +244,27 @@ def draw_compressed_tree(g, title="Compressed Tree"):
 
     nx.draw(g, pos, with_labels=False, arrows=True, node_color=colors)
     nx.draw_networkx_labels(g, pos, labels=labels)
-    plt.title(title)
+    plt.title(title, pad=20)
     plt.axis("off")
-    plt.show()
+    #plt.show()
+    plt.savefig(title + ".png")
 
-def create_colored_graph_128bit(node_id_bin, node_ids_128bit):
+
+def create_colored_graph_256bit(node_id_bin, node_ids_256bit):
     """
-    1) Build the raw tree from node_ids_128bit.
+    1) Build the raw tree from node_ids_256bit.
     2) Convert to Nx graph.
     3) Compress + color.
     4) Draw.
     """
     # 1) Build the tree
-    root = build_tree(node_ids_128bit)
+    root = build_tree(node_ids_256bit)
 
     # 2) Nx graph
     raw_g = tree_to_graph(root)
 
     # 3) Compress + color
-    all_inserted = set(node_ids_128bit)
+    all_inserted = set(node_ids_256bit)
     compressed_g = compress_and_color(
         raw_g,
         root_label="",   # empty prefix is the real root
@@ -264,5 +272,8 @@ def create_colored_graph_128bit(node_id_bin, node_ids_128bit):
         all_inserted=all_inserted
     )
 
+    node_id = int(node_id_bin, 2)
+    node_id_hex = format(node_id, "X")
+
     # 4) Draw
-    draw_compressed_tree(compressed_g, title=f"{node_id_bin} Routing Table")
+    draw_compressed_tree(compressed_g, title=f"{node_id_hex} Routing Table")

@@ -29,6 +29,14 @@ impl RotatingHash {
         }
     }
 
+    pub fn get_seed(&self) -> U256 {
+        self.seed
+    }
+
+    pub fn get_stored_on(&self) -> Option<DateTime<Utc>> {
+        self.stored_on
+    }
+
     pub fn store(&mut self) {
         let now = Utc::now();
         self.stored_on = Some(Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour(), 0, 0).unwrap());
@@ -63,7 +71,8 @@ impl RotatingHash {
 
                 for i in 0..count {
                     let next_interval = (interval * i as f64 * 3600.0).round() as i64;
-                    let analysis_time = DateTime::from_timestamp(now.timestamp() + next_interval, 0).unwrap();
+                    let start_time = Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour(), 0, 0).unwrap();
+                    let analysis_time = DateTime::from_timestamp(start_time.timestamp() + next_interval, 0).unwrap();
                     //let analysis_time = Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour() + i as u32, 0, 0).unwrap();
                     let time_id = RotatingHash::compute_rotating_id(self.seed, stored_time, self.rotation_time_hours, analysis_time);
 
