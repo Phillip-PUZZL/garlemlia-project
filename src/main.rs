@@ -1,19 +1,21 @@
-use std::collections::HashMap;
+use garlemlia::file_utils::garlemlia_files::{FileInfo, FileUpload};
 use garlemlia::garlemlia::garlemlia::Garlemlia;
 use garlemlia::garlemlia_structs::garlemlia_structs::{u256_random, GarlemliaResponse, Node, RoutingTable};
-use garlemlia::simulator::simulator::{add_running, get_global_socket, init_socket_once, load_simulated_nodes, save_simulated_nodes, simulated_to_gmessage, GarlemliaInfo, SIM};
+use garlemlia::simulator::simulator::{add_running, clear_running, get_global_socket, init_socket_once, load_simulated_nodes, save_simulated_nodes, simulated_to_gmessage, GarlemliaInfo, SimulatedNode, SIM};
 use primitive_types::U256;
 use regex::{Match, Regex};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey};
 use rsa::{RsaPrivateKey, RsaPublicKey};
+use std::collections::HashMap;
 use std::io::{stdin, stdout, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
-use garlemlia::file_utils::garlemlia_files::{FileInfo, FileUpload};
 
 async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     let node_actual = Node { id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port) };
@@ -49,8 +51,84 @@ async fn create_test_nodes() {
     }
 }
 
+async fn load_nodes_test(file_path: &str) -> Option<Vec<SimulatedNode>> {
+    match load_simulated_nodes(file_path).await {
+        Ok(nodes) => {
+            {
+                let mut sim = SIM.lock().await;
+                sim.clear_nodes();
+                sim.set_nodes(nodes.clone());
+            }
+            println!("Started {} simulated nodes!", nodes.len());
+            Some(nodes.clone())
+        }
+        Err(e) => {
+            eprintln!("ERROR LOADING NODES: {}", e);
+            None
+        },
+    }
+}
+
+async fn run_proxy_discovery_simulation() {
+    let mut running_nodes: Vec<Garlemlia> = Vec::new();
+    let mut simulated_nodes;
+
+    let mut proxies_show;
+
+    let iterations_to_run = 5;
+    let nodes_per_iteration = 100;
+
+    for index in 0..iterations_to_run {
+        println!("RUNNING... {:.1}%: {}/{}", index as f64/iterations_to_run as f64 * 100.0, index, iterations_to_run);
+
+        let file_path = "./test_nodes.json";
+
+        match load_nodes_test(file_path).await {
+            Some(nodes) => {
+                simulated_nodes = nodes;
+            }
+            None => {
+                return;
+            }
+        }
+
+        clear_running().await;
+        running_nodes.clear();
+
+        let mut selected: usize;
+        for i in 0..nodes_per_iteration {
+            running_nodes.push(create_test_node(u256_random(), 6000 + i).await);
+            selected = i as usize;
+
+            let test_node_sock1 = SocketAddr::new("127.0.0.1".parse().unwrap(), 9000 + (rand::random::<u16>() % simulated_nodes.len() as u16));
+
+            running_nodes[selected].join_network(get_global_socket().unwrap().clone(), &test_node_sock1).await;
+
+            {
+                running_nodes[selected].garlic.lock().await.discover_proxies(60).await;
+            }
+
+            sleep(Duration::from_secs(3)).await;
+
+            {
+                proxies_show = running_nodes[selected].garlic.lock().await.get_proxies();
+                proxies_show.sort_by_key(|p| p.neighbor_1_hops + p.neighbor_2_hops);
+            }
+
+            let mut file_output: String = String::new();
+            for j in 0..proxies_show.len() {
+                let now_proxy = proxies_show[j].clone();
+                file_output.push_str(format!("TOTAL HOPS: {} N1 HOPS: {} N2 HOPS: {} SN: {}\n", now_proxy.neighbor_1_hops + now_proxy.neighbor_2_hops, now_proxy.neighbor_1_hops, now_proxy.neighbor_2_hops, now_proxy.sequence_number).as_str());
+            }
+
+            let mut file = File::create(format!("./python-visualizations/discovery_data_2/{}_{}.txt", index, i)).await.unwrap();
+            file.write_all(file_output.as_bytes()).await.unwrap();
+        }
+        running_nodes.clear();
+    }
+}
+
 async fn garlemlia_console() {
-    // TODO: Finish this to make it viable as a means to control garlemlia
     init_socket_once().await;
 
     let mut running_nodes: Vec<Garlemlia> = Vec::new();
@@ -488,13 +566,13 @@ async fn garlemlia_console() {
                 }
 
                 for num in 0..3 {
-                    selected_search_proxies.push(proxies_show[num].clone());
-                    search_proxy_ids.push(proxies_show[num].clone().sequence_number);
+                    selected_file_proxies.push(proxies_show[num].clone());
+                    file_proxy_ids.push(proxies_show[num].clone().sequence_number);
                 }
 
                 for num in 1..5 {
-                    selected_file_proxies.push(proxies_show[proxies_show.len() - num].clone());
-                    file_proxy_ids.push(proxies_show[proxies_show.len() - num].clone().sequence_number);
+                    selected_search_proxies.push(proxies_show[proxies_show.len() - num].clone());
+                    search_proxy_ids.push(proxies_show[proxies_show.len() - num].clone().sequence_number);
                 }
 
                 let file_name = "./JWST.tif";
@@ -585,15 +663,17 @@ async fn garlemlia_console() {
                 }
 
                 for num in 0..3 {
-                    selected_search_proxies.push(proxies_show[num].clone());
-                    search_proxy_ids.push(proxies_show[num].clone().sequence_number);
+                    selected_file_proxies.push(proxies_show[num].clone());
+                    file_proxy_ids.push(proxies_show[num].clone().sequence_number);
                 }
 
                 for num in 1..5 {
-                    selected_file_proxies.push(proxies_show[proxies_show.len() - num].clone());
-                    file_proxy_ids.push(proxies_show[proxies_show.len() - num].clone().sequence_number);
+                    selected_search_proxies.push(proxies_show[proxies_show.len() - num].clone());
+                    search_proxy_ids.push(proxies_show[proxies_show.len() - num].clone().sequence_number);
                 }
             }
+        } else if s.starts_with("TEST DISCOVERY") {
+            run_proxy_discovery_simulation().await;
         } else if s.starts_with("QUIT") {
             break
         }

@@ -118,6 +118,10 @@ impl Simulator {
         }
     }
 
+    pub fn clear_nodes(&mut self) {
+        self.nodes.clear();
+    }
+
     pub async fn create_node(&mut self, new_node: SimulatedNode) {
         self.nodes.insert(new_node.node.address.clone(), new_node);
     }
@@ -752,6 +756,13 @@ pub async fn remove_running(node: Node) {
     {
         RUNNING_NODES.lock().await.remove(&node);
         RUNNING_GARLEMLIA.lock().await.remove(&node);
+    }
+}
+
+pub async fn clear_running() {
+    {
+        RUNNING_NODES.lock().await.clear();
+        RUNNING_GARLEMLIA.lock().await.clear();
     }
 }
 
