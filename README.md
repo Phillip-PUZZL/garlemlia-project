@@ -64,3 +64,5 @@ Current interaction with Garlemlia is limited to a badly designed terminal inter
 The user interaction with this implementation was designed with the idea of running
 the tests mentioned in Chapter 8, which it does well. This, however, does not mean
 that it is a functional interface outside of testing.
+
+This implementation was initially written and  presented to the graduate faculty of computer science of The University of Texas Permian Basin in partial fulfillment of requirements for the degree of master of science.
