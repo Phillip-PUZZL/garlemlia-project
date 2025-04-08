@@ -1,10 +1,11 @@
 use garlemlia::file_utils::garlemlia_files::{FileInfo, FileUpload};
+use garlemlia::garlemlia_structs::garlemlia_structs::SOCKET_FILE_DATA_MAX;
 use std::path::Path;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const TEST_FILE_NAME: &str = "file_example.png";
+const TEST_FILE_NAME: &str = "JWST.tif";
 const TEST_OUTPUT_FOLDER: &str = "./test_file_methods";
 const CHUNKS_FOLDER: &str = "temp_chunks";
 const DOWNLOADS_FOLDER: &str = "downloads";
@@ -38,18 +39,48 @@ async fn file_encryption_and_split_test() {
 
     assert!(File::open(encrypted_file_name.clone()).await.is_ok(), "Did not save encrypted file!");
 
-    let chunks_info = FileUpload::split_into_chunks(Box::from(Path::new(&encrypted_file_name)), 8).await;
+    let chunks_info = FileUpload::split_into_chunks(Box::from(Path::new(&encrypted_file_name)), 150).await;
 
     assert!(chunks_info.is_ok(), "Did not split file into chunks!");
     assert!(File::open(encrypted_file_name.clone()).await.is_err(), "Did not delete encrypted file!");
 
     let chunks = chunks_info.unwrap();
 
-    let file_upload = FileUpload::new(file_information, chunks, 0.25);
+    let file_upload = FileUpload::new(file_information, chunks, 1.0);
 
     let json_string = serde_json::to_string_pretty(&file_upload).unwrap();
     let mut file = File::create(format!("{}/{}", test_output_folder, FILE_UPLOAD_FILE)).await.unwrap();
     file.write_all(json_string.as_bytes()).await.unwrap();
+}
+
+#[tokio::test]
+async fn split_chunk_into_pieces() {
+    let test_output_folder = TEST_OUTPUT_FOLDER;
+
+    let test_chunks_output_folder = format!("{}/{}", test_output_folder, CHUNKS_FOLDER);
+    let chunk_id = "00e4364ad9c049b48de35056b5e07d3f636b3ebe6ce69ba13b19c25dee7055e4";
+    
+    let mut chunk_file = File::open(format!("{}/{}", test_chunks_output_folder, chunk_id)).await.unwrap();
+
+    let mut chunk_data = Vec::new();
+    chunk_file.read_to_end(&mut chunk_data).await.unwrap();
+
+    let part_size = SOCKET_FILE_DATA_MAX;
+
+    let mut total_parts = 0;
+    while chunk_data.len() > 0 {
+        let part_data: Vec<u8>;
+        if part_size > chunk_data.len() {
+            part_data = chunk_data.drain(..).collect();
+        } else {
+            part_data = chunk_data.drain(0..part_size).collect();
+        }
+
+        let mut piece_file = File::create(format!("{}/{}_{}", test_chunks_output_folder, chunk_id, total_parts)).await.unwrap();
+        piece_file.write_all(&*part_data).await.unwrap();
+
+        total_parts += 1;
+    }
 }
 
 #[tokio::test]

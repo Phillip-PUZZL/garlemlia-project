@@ -370,7 +370,7 @@ impl GarlemliaFunctions {
                                   chunks: Vec<GarlemliaResponse>,
                                   requester: SocketAddr) {
         for chunk in chunks {
-            sleep(Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(200)).await;
             let response = GarlemliaMessage::Garlic {
                 sender: self_node.clone(),
                 msg: GarlicMessage::FileChunkPart {
@@ -676,6 +676,8 @@ impl GarlemliaFunctions {
                                                                 Arc::clone(&chunk_part_associations),
                                                                 GarlemliaStoreRequest::Validator { id: request_id.request_id, proxy_id },
                                                                 3).await;
+
+                                sleep(Duration::from_millis(100)).await;
 
                                 response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
                             }

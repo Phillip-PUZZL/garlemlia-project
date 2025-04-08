@@ -1444,7 +1444,7 @@ impl GarlicCast {
 
             let this_chunk_info = CloveMessage::file_chunk_to_upload(chunk, file_storage.clone(), Some(request_id)).await;
             for message in this_chunk_info {
-                sleep(Duration::from_millis(15)).await;
+                sleep(Duration::from_millis(30)).await;
                 let mut sent = false;
 
                 while !sent && file_chunk_proxies.len() > 0 {
@@ -1836,7 +1836,7 @@ impl GarlicCast {
 
                 match response2 {
                     Ok(_) => {
-                        println!("{} :: REPLACEALT {} :: {} -> {}", Utc::now(), updated.sequence_number, self.local_node.address, updated.node.address);
+                        //println!("{} :: REPLACEALT {} :: {} -> {}", Utc::now(), updated.sequence_number, self.local_node.address, updated.node.address);
                         Ok(try_update.unwrap())
                     }
                     _ => {
@@ -2297,7 +2297,7 @@ impl GarlicCast {
 
             match response {
                 Ok(_) => {
-                    println!("{} :: UPDATEALT {} :: {} -> {}", time, n_1.sequence_number, self.local_node.address, n_1.node.address);
+                    //println!("{} :: UPDATEALT {} :: {} -> {}", time, n_1.sequence_number, self.local_node.address, n_1.node.address);
                     n_1_success = true;
                 }
                 _ => {
@@ -2330,7 +2330,7 @@ impl GarlicCast {
 
             match response {
                 Ok(_) => {
-                    println!("{} :: UPDATEALT {} :: {} -> {}", time, n_2.sequence_number, self.local_node.address, n_2.node.address);
+                    //println!("{} :: UPDATEALT {} :: {} -> {}", time, n_2.sequence_number, self.local_node.address, n_2.node.address);
                 }
                 _ => {
                     println!("{} :: UPDATEALT {} :: FAILURE : OFFLINE :: {} -> {}", time, n_2.sequence_number, self.local_node.address, n_2.node.address);
@@ -2363,7 +2363,7 @@ impl GarlicCast {
 
         match response {
             Ok(_) => {
-                println!("{} :: UPDATEALTNEXTORLAST {} :: {} -> {}", time, my_alt.sequence_number, self.local_node.address, my_alt.node.address);
+                //println!("{} :: UPDATEALTNEXTORLAST {} :: {} -> {}", time, my_alt.sequence_number, self.local_node.address, my_alt.node.address);
             }
             _ => {
                 println!("{} :: UPDATEALTNEXTORLAST {} :: FAILURE : OFFLINE :: {} -> {}", time, my_alt.sequence_number, self.local_node.address, my_alt.node.address);
@@ -2604,9 +2604,11 @@ impl GarlicCast {
                 
                 match response.unwrap() {
                     GarlemliaResponse::Validator { proxy } => {
-                        {
-                            if let Err(e) = self.message_handler.send_no_recv(&Arc::clone(&self.socket), self.local_node.clone(), &proxy.unwrap(), &GarlicMessage::build_send(self.local_node.clone(), msg)).await {
-                                eprintln!("Failed to send IsAlive to {}: {:?}", proxy.unwrap(), e);
+                        if proxy.is_some() {
+                            {
+                                if let Err(e) = self.message_handler.send_no_recv(&Arc::clone(&self.socket), self.local_node.clone(), &proxy.unwrap(), &GarlicMessage::build_send(self.local_node.clone(), msg)).await {
+                                    eprintln!("Failed to send IsAlive to {}: {:?}", proxy.unwrap(), e);
+                                }
                             }
                         }
                     }
@@ -2703,7 +2705,7 @@ impl GarlicCast {
                 Ok(None)
             }
             GarlicMessage::Forward { sequence_number, clove } => {
-                println!("{} :: FORWARD {}[{}] :: {} -> {}", Utc::now(), sequence_number, clove.index, node.address, self.local_node.address);
+                //println!("{} :: FORWARD {}[{}] :: {} -> {}", Utc::now(), sequence_number, clove.index, node.address, self.local_node.address);
 
                 let msg = clove.clone();
                 let mut next = self.cache.get_forward_node(CloveNode { sequence_number, node: node.clone() });
@@ -2881,7 +2883,7 @@ impl GarlicCast {
 
                                             self.collected_messages.remove(&clove.request_id);
 
-                                            println!("{} :: CLOVEMESSAGE :: {} :: {:?}", Utc::now(), self.local_node.address, msg_from_proxy.clone());
+                                            //println!("{} :: CLOVEMESSAGE :: {} :: {:?}", Utc::now(), self.local_node.address, msg_from_proxy.clone());
                                             return Ok(self.manage_proxy_message(msg_from_proxy).await);
                                         }
                                     } else {
