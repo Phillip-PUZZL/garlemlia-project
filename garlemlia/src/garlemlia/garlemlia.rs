@@ -18,17 +18,19 @@ use garlic_cast::{GarlicCast};
 use tokio::time::sleep;
 use crate::file_utils::garlemlia_files::FileStorage;
 use crate::garlemlia_structs::garlemlia_structs::{ChunkPartAssociations, CloveMessage, CloveRequestID, GarlemliaData, GarlemliaFindRequest, GarlemliaResponse, GarlemliaStoreRequest, GarlicMessage, ProcessingCheck, ProxyChunkPartInfo, ProxyFileChunkInfo, SOCKET_DATA_MAX};
-use crate::simulator::simulator::get_global_socket;
 
+/// **Struct to store Kademlia functions**
 pub struct GarlemliaFunctions {}
 
 impl GarlemliaFunctions {
+    /// Basic Kademlia iterative find node implementation
     pub async fn iterative_find_node(socket: Arc<UdpSocket>,
                                      self_node: Node,
                                      routing_table: Arc<Mutex<RoutingTable>>,
                                      message_handler: Arc<Box<dyn GMessage>>,
                                      garlic: Arc<Mutex<GarlicCast>>,
                                      target_id: U256) -> Vec<Node> {
+        // For storing all nodes which have already been queried so as not to re-query
         let mut queried_nodes = HashSet::new();
 
         // Get initial candidate set from the routing table.
@@ -109,13 +111,16 @@ impl GarlemliaFunctions {
             new_candidate_set.extend(new_nodes.clone());
             new_candidate_set.sort_by_key(|n| n.id ^ target_id);
             new_candidate_set.dedup();
+            // Remove self in case it is added
             new_candidate_set.retain(|n| *n != self_node);
+            // Keep only closest K nodes
             new_candidate_set.truncate(DEFAULT_K);
 
             // Compare candidate sets using IDs (order-independent)
             let old_ids: HashSet<U256> = top_k.iter().map(|n| n.id).collect();
             let new_ids: HashSet<U256> = new_candidate_set.iter().map(|n| n.id).collect();
             if old_ids == new_ids {
+                // No new closest K nodes found, can stop querying
                 break;
             }
             top_k = new_candidate_set;
@@ -126,6 +131,7 @@ impl GarlemliaFunctions {
                 .filter(|node| !queried_nodes.contains(&node.address))
                 .cloned()
                 .collect();
+            // Only want to query Alpha nodes at one time
             if nodes_to_query.len() > LOOKUP_ALPHA {
                 nodes_to_query.truncate(LOOKUP_ALPHA);
             }
@@ -140,11 +146,13 @@ impl GarlemliaFunctions {
         result.dedup();
         result.sort_by_key(|n| n.id ^ target_id);
         result.truncate(DEFAULT_K);
+        
+        // Return K closest nodes
         result
     }
 
 
-    // Perform an iterative lookup for a value in the DHT
+    /// Perform an iterative lookup for a value in the DHT - Kademlia regular implementation
     pub async fn iterative_find_value(socket: Arc<UdpSocket>,
                                       self_node: Node,
                                       routing_table: Arc<Mutex<RoutingTable>>,
@@ -161,6 +169,7 @@ impl GarlemliaFunctions {
             _ => {}
         }
 
+        // Keep track of nodes already queried
         let mut queried_nodes = HashSet::new();
 
         // Get initial candidate set from the routing table.
@@ -247,7 +256,9 @@ impl GarlemliaFunctions {
             for task in tasks {
                 if let Ok(Some(result)) = task.await {
                     match result {
-                        Ok(value) => return Some(value), // Return immediately if value is found
+                        // Return immediately if value is found
+                        Ok(value) => return Some(value),
+                        // Else, add the found nodes to the list
                         Err(received_nodes) => {
                             new_nodes.extend(received_nodes);
                         }
@@ -286,6 +297,7 @@ impl GarlemliaFunctions {
         None
     }
 
+    /// Kademlia implementation of storing values
     pub async fn store_value(socket: Arc<UdpSocket>,
                              self_node: Node,
                              routing_table: Arc<Mutex<RoutingTable>>,
@@ -554,7 +566,7 @@ impl GarlemliaFunctions {
                             let total_buckets = 255;
                             for b in 0..=total_buckets {
                                 let refresh_id = RoutingTable::random_id_for_bucket(self_node.id, b);
-                                GarlemliaFunctions::iterative_find_node(get_global_socket().unwrap(), self_node.clone(),
+                                GarlemliaFunctions::iterative_find_node(Arc::clone(&socket), self_node.clone(),
                                                                         Arc::clone(&routing_table),
                                                                         Arc::clone(&message_handler),
                                                                         Arc::clone(&garlic),

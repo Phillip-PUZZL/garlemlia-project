@@ -1,7 +1,6 @@
 use crate::file_utils::garlemlia_files::{FileInfo, FileStorage, FileUpload};
 use crate::garlemlia_structs::garlemlia_structs;
-use crate::garlemlia_structs::garlemlia_structs::{u256_random, CloveRequestID, GarlemliaResponse};
-use crate::simulator::simulator::{get_global_socket, SimulatedMessageHandler};
+use crate::garlemlia_structs::garlemlia_structs::{u256_random, CloveRequestID, GarlemliaMessageHandler, GarlemliaResponse};
 use crate::time_hash::time_based_hash::HashLocation;
 use aes::Aes256;
 use bincode;
@@ -645,11 +644,11 @@ impl SerializableGarlicCast {
         }
     }
 
-    pub fn to_garlic(self) -> GarlicCast {
+    pub fn to_garlic(self, socket: UdpSocket) -> GarlicCast {
         GarlicCast {
-            socket: get_global_socket().unwrap(),
+            socket: Arc::new(socket),
             local_node: self.local_node,
-            message_handler: Arc::new(SimulatedMessageHandler::create(0)),
+            message_handler: Arc::new(GarlemliaMessageHandler::create(0)),
             known_nodes: self.known_nodes,
             proxies: SerializableProxy::vec_to_proxy(self.proxies),
             initiators: SerializableProxy::vec_to_proxy(self.initiators),
