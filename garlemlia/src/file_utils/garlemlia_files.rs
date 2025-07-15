@@ -1,4 +1,3 @@
-use crate::garlemlia_structs::garlemlia_structs::{u256_random, ChunkInfo};
 use crate::time_hash::time_based_hash::{HashLocation, RotatingHash};
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
@@ -12,6 +11,8 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use crate::helper_functions::helper_functions::u256_random;
+use crate::structs::garlemlia_message::ChunkInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileInfo {

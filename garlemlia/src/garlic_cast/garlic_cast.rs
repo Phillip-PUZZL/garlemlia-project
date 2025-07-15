@@ -1,13 +1,10 @@
 use crate::file_utils::garlemlia_files::{FileInfo, FileStorage, FileUpload};
-use crate::garlemlia_structs::garlemlia_structs;
-use crate::garlemlia_structs::garlemlia_structs::{u256_random, CloveRequestID, GarlemliaMessageHandler, GarlemliaResponse};
 use crate::time_hash::time_based_hash::HashLocation;
 use aes::Aes256;
 use bincode;
 use chrono::{DateTime, Timelike, Utc};
 use cipher::generic_array::GenericArray;
 use cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
-use garlemlia_structs::{Clove, CloveData, CloveMessage, CloveNode, GMessage, GarlemliaMessage, GarlicMessage, MessageError, Node};
 use primitive_types::U256;
 use rand::random_bool;
 use rand::seq::IndexedRandom;
@@ -23,6 +20,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
+use crate::helper_functions::helper_functions::u256_random;
+use crate::structs::error::MessageError;
+use crate::structs::garlemlia_message::{GMessage, GarlemliaMessage, GarlemliaMessageHandler, GarlemliaResponse};
+use crate::structs::garlic_message::{Clove, CloveData, CloveMessage, CloveNode, CloveRequestID, GarlicMessage};
+use crate::structs::node::Node;
 
 pub const FORWARD_P: f64 = 0.95;
 

@@ -2,9 +2,10 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use primitive_types::U256;
 use rsa::sha2::Sha256;
 use serde::{Deserialize, Serialize};
-use crate::garlemlia_structs::garlemlia_structs::u256_random;
 
 use hmac::{Hmac, Mac};
+use crate::helper_functions::helper_functions::u256_random;
+
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

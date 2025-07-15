@@ -1,9 +1,9 @@
 use garlemlia::file_utils::garlemlia_files::{FileInfo, FileUpload};
-use garlemlia::garlemlia_structs::garlemlia_structs::SOCKET_FILE_DATA_MAX;
 use std::path::Path;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use garlemlia::structs::constants::SOCKET_FILE_DATA_MAX;
 
 const TEST_FILE_NAME: &str = "JWST.tif";
 const TEST_OUTPUT_FOLDER: &str = "./test_file_methods";

@@ -11,13 +11,16 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex};
 use tokio::{fs, task};
 
-use crate::garlemlia_structs::garlemlia_structs;
 use crate::garlic_cast::garlic_cast;
-use garlemlia_structs::{Node, MessageChannel, DEFAULT_K, GMessage, GarlemliaMessage, RoutingTable, LOOKUP_ALPHA};
 use garlic_cast::{GarlicCast};
 use tokio::time::sleep;
 use crate::file_utils::garlemlia_files::FileStorage;
-use crate::garlemlia_structs::garlemlia_structs::{ChunkPartAssociations, CloveMessage, CloveRequestID, GarlemliaData, GarlemliaFindRequest, GarlemliaResponse, GarlemliaStoreRequest, GarlicMessage, ProcessingCheck, ProxyChunkPartInfo, ProxyFileChunkInfo, SOCKET_DATA_MAX};
+use crate::structs::constants::{DEFAULT_K, LOOKUP_ALPHA, SOCKET_DATA_MAX};
+use crate::structs::file_chunks::{ChunkPartAssociations, ProcessingCheck, ProxyChunkPartInfo, ProxyFileChunkInfo};
+use crate::structs::garlemlia_message::{GMessage, GarlemliaData, GarlemliaFindRequest, GarlemliaMessage, GarlemliaResponse, GarlemliaStoreRequest, MessageChannel};
+use crate::structs::garlic_message::{CloveMessage, CloveRequestID, GarlicMessage};
+use crate::structs::node::Node;
+use crate::structs::routing_table::RoutingTable;
 
 /// **Struct to store Kademlia functions**
 pub struct GarlemliaFunctions {}

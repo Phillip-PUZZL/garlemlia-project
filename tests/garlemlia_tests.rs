@@ -1,11 +1,15 @@
 use garlemlia::garlemlia::garlemlia::Garlemlia;
-use garlemlia::garlemlia_structs::garlemlia_structs::{u256_random, GMessage, GarlemliaFindRequest, GarlemliaMessageHandler, GarlemliaResponse, GarlemliaStoreRequest, Node, RoutingTable, DEFAULT_K};
 use primitive_types::U256;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+use garlemlia::helper_functions::helper_functions::u256_random;
+use garlemlia::structs::constants::DEFAULT_K;
+use garlemlia::structs::garlemlia_message::{GMessage, GarlemliaFindRequest, GarlemliaMessageHandler, GarlemliaResponse, GarlemliaStoreRequest};
+use garlemlia::structs::node::Node;
+use garlemlia::structs::routing_table::RoutingTable;
 
 async fn create_test_node(id: U256, port: u16) -> Garlemlia {
     let mut node = Garlemlia::new(id, "127.0.0.1", port, RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)}), GarlemliaMessageHandler::create(1), Box::new(Path::new("./running_nodes_files"))).await;

@@ -5,11 +5,6 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.43.0", features = ["full"] }
-rand = { version = "0.9.0", features = ["std"] }
-rand_core = "0.6.4"
-rsa = "0.9.7"
 garlemlia = { path = "./garlemlia" }
-regex = "1.11.1"
 primitive-types = { version = "0.13.1", features = ["serde"] }
 serde_json = "1.0.140"
-hex = "0.4.3"
