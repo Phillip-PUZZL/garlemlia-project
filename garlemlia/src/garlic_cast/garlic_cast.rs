@@ -6,612 +6,27 @@ use chrono::{DateTime, Timelike, Utc};
 use cipher::generic_array::GenericArray;
 use cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 use primitive_types::U256;
-use rand::random_bool;
 use rand::seq::IndexedRandom;
-use rand::{rng, RngCore};
+use rand::{rng, RngCore, random_bool};
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize, Serialize};
-use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
+use crate::garlic_cast::clove_cache::{CloveCache, SerializableCloveCache};
+use crate::garlic_cast::request_info::{InitiatorRequest, Proxy, ProxyRequest, SerializableInitiatorRequest, SerializableProxy, SerializableProxyRequest};
 use crate::helper_functions::helper_functions::u256_random;
 use crate::structs::error::MessageError;
 use crate::structs::garlemlia_message::{GMessage, GarlemliaMessage, GarlemliaMessageHandler, GarlemliaResponse};
-use crate::structs::garlic_message::{Clove, CloveData, CloveMessage, CloveNode, CloveRequestID, GarlicMessage};
+use crate::structs::garlic_message::{Clove, CloveMessage, CloveNode, CloveRequestID, GarlicMessage};
 use crate::structs::node::Node;
 
 pub const FORWARD_P: f64 = 0.95;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SerializableCloveCache {
-    cloves: HashMap<U256, CloveData>,
-    next_hop_key: HashMap<u32, CloveNode>,
-    next_hop_val: HashMap<u32, Option<CloveNode>>,
-    alt_nodes_key: HashMap<u32, CloveNode>,
-    alt_nodes_val: HashMap<u32, CloveNode>,
-    alt_to_sequence_key: HashMap<u32, CloveNode>,
-    alt_to_sequence_val: HashMap<u32, U256>,
-    associations: HashMap<U256, Vec<CloveNode>>,
-    seen_last: HashMap<U256, DateTime<Utc>>,
-    my_alt_nodes: HashMap<U256, CloveNode>,
-    am_alt_for: HashSet<U256>
-}
-
-impl SerializableCloveCache {
-    pub fn from(cache: CloveCache) -> SerializableCloveCache {
-        let mut next_hop_key = HashMap::new();
-        let mut next_hop_val = HashMap::new();
-        let mut alt_nodes_key = HashMap::new();
-        let mut alt_nodes_val = HashMap::new();
-        let mut alt_to_sequence_key = HashMap::new();
-        let mut alt_to_sequence_val = HashMap::new();
-
-        let mut index = 0;
-        for info in cache.next_hop.iter() {
-            next_hop_key.insert(index, info.0.clone());
-            next_hop_val.insert(index, info.1.clone());
-
-            index += 1;
-        }
-
-        index = 0;
-        for info in cache.alt_nodes.iter() {
-            alt_nodes_key.insert(index, info.0.clone());
-            alt_nodes_val.insert(index, info.1.clone());
-
-            index += 1;
-        }
-
-        index = 0;
-        for info in cache.alt_to_sequence.iter() {
-            alt_to_sequence_key.insert(index, info.0.clone());
-            alt_to_sequence_val.insert(index, info.1.clone());
-
-            index += 1;
-        }
-
-        SerializableCloveCache {
-            cloves: HashMap::new(),
-            next_hop_key,
-            next_hop_val,
-            alt_nodes_key,
-            alt_nodes_val,
-            alt_to_sequence_key,
-            alt_to_sequence_val,
-            associations: cache.associations,
-            seen_last: cache.seen_last,
-            my_alt_nodes: cache.my_alt_nodes,
-            am_alt_for: cache.am_alt_for
-        }
-    }
-
-    pub fn to_clove_cache(self) -> CloveCache {
-        let mut next_hop = HashMap::new();
-        let mut alt_nodes = HashMap::new();
-        let mut alt_to_sequence = HashMap::new();
-
-        for entry in self.next_hop_key.iter() {
-            let val = self.next_hop_val.get(entry.0).unwrap().clone();
-            next_hop.insert(entry.1.clone(), val);
-        }
-
-        for entry in self.alt_nodes_key.iter() {
-            let val = self.alt_nodes_val.get(entry.0).unwrap().clone();
-            alt_nodes.insert(entry.1.clone(), val);
-        }
-
-        for entry in self.alt_to_sequence_key.iter() {
-            let val = self.alt_to_sequence_val.get(entry.0).unwrap().clone();
-            alt_to_sequence.insert(entry.1.clone(), val);
-        }
-
-        CloveCache {
-            cloves: self.cloves,
-            next_hop,
-            alt_nodes,
-            alt_to_sequence,
-            associations: self.associations,
-            seen_last: self.seen_last,
-            my_alt_nodes: self.my_alt_nodes,
-            am_alt_for: self.am_alt_for,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CloveCache {
-    cloves: HashMap<U256, CloveData>,
-    next_hop: HashMap<CloveNode, Option<CloveNode>>,
-    alt_nodes: HashMap<CloveNode, CloveNode>,
-    alt_to_sequence: HashMap<CloveNode, U256>,
-    associations: HashMap<U256, Vec<CloveNode>>,
-    seen_last: HashMap<U256, DateTime<Utc>>,
-    my_alt_nodes: HashMap<U256, CloveNode>,
-    am_alt_for: HashSet<U256>
-}
-
-impl CloveCache {
-    pub fn new() -> CloveCache {
-        CloveCache {
-            cloves: HashMap::new(),
-            next_hop: HashMap::new(),
-            alt_nodes: HashMap::new(),
-            alt_to_sequence: HashMap::new(),
-            associations: HashMap::new(),
-            seen_last: HashMap::new(),
-            my_alt_nodes: HashMap::new(),
-            am_alt_for: HashSet::new(),
-        }
-    }
-
-    pub fn remove_sequence(&mut self, sequence_number: U256) {
-        let associated = self.associations.remove(&sequence_number);
-
-        match associated {
-            Some(associated_nodes) => {
-                self.cloves.remove(&sequence_number);
-                self.seen_last.remove(&sequence_number);
-                self.my_alt_nodes.remove(&sequence_number);
-
-                for node in associated_nodes {
-                    self.next_hop.remove(&node);
-                    self.alt_nodes.remove(&node);
-                }
-            }
-            None => {
-                // If the clove exists in the cache, there should be nodes associated with it
-                // So this should never happen in theory.
-                println!("This should not happen: CloveCache::remove_sequence():1");
-            }
-        }
-    }
-
-    pub fn insert_clove(&mut self, clove: Clove, from: Node) {
-        self.cloves.insert(clove.sequence_number, CloveData { clove, from });
-    }
-
-    pub fn remove_clove(&mut self, sequence_number: U256) {
-        self.cloves.remove(&sequence_number);
-    }
-
-    pub fn insert_association(&mut self, sequence_number: U256, node: CloveNode) {
-        if self.associations.contains_key(&sequence_number) {
-            self.associations.get_mut(&sequence_number).unwrap().push(node);
-            self.associations.get_mut(&sequence_number).unwrap().dedup();
-        } else {
-            self.associations.insert(sequence_number, vec![node]);
-        }
-    }
-
-    pub fn insert_updated_association(&mut self, sequence_number: U256, new_sequence_number: U256) {
-        if self.associations.contains_key(&sequence_number) {
-            let associations = self.associations.get(&sequence_number).unwrap().clone();
-
-            self.associations.insert(new_sequence_number, vec![]);
-            for mut node in associations.iter().cloned() {
-                node.sequence_number = new_sequence_number;
-                self.associations.get_mut(&new_sequence_number).unwrap().push(node);
-            }
-        } else {
-            self.associations.insert(new_sequence_number, vec![]);
-        }
-    }
-
-    pub fn remove_association(&mut self, sequence_number: U256) {
-        self.associations.remove(&sequence_number);
-    }
-
-    pub fn insert_next_hop(&mut self, node: CloveNode, next_hop: Option<CloveNode>) {
-        self.next_hop.insert(node.clone(), next_hop.clone());
-
-        if let Some(next_hop) = next_hop {
-            self.insert_association(node.sequence_number, next_hop);
-        }
-    }
-
-    pub fn update_next_hop(&mut self, node: CloveNode, next_hop: Option<CloveNode>) {
-        let prev_next = self.next_hop.remove(&node.clone());
-        self.next_hop.insert(node.clone(), next_hop.clone());
-
-        if let Some(previous_wrapped) = prev_next {
-            if let Some(previous) = previous_wrapped {
-                let associations = self.associations.get_mut(&node.sequence_number).unwrap();
-                associations.retain(|x| *x != previous);
-                if let Some(next_hop) = next_hop {
-                    self.insert_association(node.sequence_number, next_hop);
-                }
-            }
-        }
-    }
-
-    pub fn remove_next_hop(&mut self, node: CloveNode) {
-        self.next_hop.remove(&node);
-    }
-
-    pub fn insert_am_alt(&mut self, sequence_number: U256) {
-        self.am_alt_for.insert(sequence_number);
-    }
-
-    pub fn remove_am_alt(&mut self, sequence_number: U256) {
-        self.am_alt_for.remove(&sequence_number);
-    }
-
-    pub fn insert_alt_node(&mut self, node: CloveNode, alt_node: CloveNode) {
-        self.alt_nodes.insert(node.clone(), alt_node.clone());
-
-        let try_sequence = self.alt_to_sequence.get(&node).cloned();
-        if try_sequence.is_some() {
-            self.alt_to_sequence.insert(alt_node.clone(), try_sequence.unwrap());
-            self.insert_association(try_sequence.clone().unwrap(), alt_node.clone());
-        } else {
-            self.alt_to_sequence.insert(alt_node.clone(), node.sequence_number);
-            self.insert_association(node.sequence_number, alt_node);
-        }
-    }
-
-    pub fn remove_alt_node(&mut self, node: CloveNode) {
-        self.alt_nodes.remove(&node);
-        self.alt_to_sequence.remove(&node);
-    }
-
-    pub fn get_alt(&self, node: CloveNode) -> Option<CloveNode> {
-        self.alt_nodes.get(&node).cloned()
-    }
-
-    pub fn get_old_from_alt(&self, node: &CloveNode) -> Option<CloveNode> {
-        for info in self.alt_nodes.iter() {
-            if info.1.sequence_number == node.sequence_number {
-                return Some(info.0.clone());
-            }
-        }
-        None
-    }
-
-    pub fn get_sequence_from_alt(&self, node: CloveNode) -> Option<U256> {
-        self.alt_to_sequence.get(&node).cloned()
-    }
-
-    pub fn insert_my_alt_node(&mut self, sequence_number: U256, my_alt_node: CloveNode) {
-        self.my_alt_nodes.insert(sequence_number, my_alt_node.clone());
-
-        self.insert_association(sequence_number, my_alt_node);
-    }
-
-    pub fn remove_my_alt_node(&mut self, sequence_number: U256) {
-        self.my_alt_nodes.remove(&sequence_number);
-    }
-    
-    pub fn get_forward_node(&self, clove_node: CloveNode) -> Result<Option<CloveNode>, ()> {
-        let info = self.next_hop.get(&clove_node);
-
-        match info {
-            Some(info) => {
-                Ok(info.clone())
-            }
-            _ => {
-                Err(())
-            }
-        }
-    }
-
-    pub fn update_sequence_number(&mut self, new_sequence_number: U256, clove_node: CloveNode) {
-        let node = clove_node.node.clone();
-        let new_clove_node = CloveNode { sequence_number: new_sequence_number, node };
-
-        let next = self.get_forward_node(clove_node.clone());
-
-        match next {
-            Ok(next_hop) => {
-                match next_hop {
-                    Some(next_node) => {
-                        let mut new_next_hop_clove_node = CloveNode { sequence_number: new_sequence_number, node: next_node.clone().node };
-                        new_next_hop_clove_node.sequence_number = new_sequence_number;
-                        self.insert_next_hop(new_clove_node.clone(), Some(new_next_hop_clove_node.clone()));
-                        self.insert_next_hop(new_next_hop_clove_node.clone(), Some(new_clove_node.clone()));
-
-                        let mut has_alt = self.alt_nodes.contains_key(&clove_node);
-
-                        if has_alt {
-                            // In theory this should never happen since alt nodes are assigned
-                            // after the path has already been solidified
-                            println!("This should not happen: CloveCache::update_sequence_number():1");
-                            let mut alt = self.alt_nodes.get(&clove_node).unwrap().clone();
-                            alt.sequence_number = new_sequence_number;
-                            self.insert_alt_node(new_clove_node, alt);
-                        }
-
-                        has_alt = self.alt_nodes.contains_key(&next_node);
-
-                        if has_alt {
-                            // In theory this should never happen since alt nodes are assigned
-                            // after the path has already been solidified
-                            println!("This should not happen: CloveCache::update_sequence_number():2");
-                            let mut alt = self.alt_nodes.get(&next_node).unwrap().clone();
-                            alt.sequence_number = new_sequence_number;
-                            self.insert_alt_node(new_next_hop_clove_node, alt);
-                        }
-
-                        self.insert_updated_association(clove_node.sequence_number, new_sequence_number);
-                    }
-                    None => {
-                        // This is the end of the line, either at the initiator or proxy
-                        self.next_hop.insert(new_clove_node.clone(), None);
-
-                        let has_alt = self.alt_nodes.contains_key(&clove_node);
-
-                        if has_alt {
-                            // In theory this should never happen since alt nodes are assigned
-                            // after the path has already been solidified
-                            println!("This should not happen: CloveCache::update_sequence_number():3");
-                            let alt = self.alt_nodes.get(&clove_node).unwrap().clone();
-                            self.insert_alt_node(new_clove_node, alt);
-                        }
-
-                        self.insert_updated_association(clove_node.sequence_number, new_sequence_number);
-                    }
-                }
-            }
-            Err(_) => {
-                // This shouldn't happen and is a failure
-                // This method should only be called upon a proxy agree, meaning that this
-                // Should exist
-                println!("This should not happen: CloveCache::update_sequence_number():4");
-            }
-        }
-    }
-
-    pub fn replace_with_alt_node(&mut self, old_clove_node: &CloveNode) -> Option<CloveNode> {
-        let new_clove_node = self.alt_nodes.remove(old_clove_node);
-
-        match new_clove_node {
-            Some(new_clove_node) => {
-                let forward_clove_node_try = self.next_hop.remove(old_clove_node).unwrap();
-
-                match forward_clove_node_try {
-                    Some(forward_clove_node) => {
-                        self.next_hop.insert(new_clove_node.clone(), Some(forward_clove_node.clone()));
-                        self.next_hop.remove(&forward_clove_node);
-                        self.next_hop.insert(forward_clove_node, Some(new_clove_node.clone()));
-                    }
-                    _ => {
-                        self.next_hop.insert(new_clove_node.clone(), None);
-                    }
-                }
-                Some(new_clove_node)
-            }
-            _ => {
-                None
-            }
-        }
-    }
-
-    pub fn seen(&mut self, sequence_number: U256) {
-        self.seen_last.insert(sequence_number, Utc::now());
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct SerializableProxy {
-    sequence_number: U256,
-    neighbor_1: CloveNode,
-    neighbor_2: CloveNode,
-    neighbor_1_hops: u16,
-    neighbor_2_hops: u16,
-    public_key: String,
-    #[serde(with = "chrono::serde::ts_seconds")]
-    used_last: DateTime<Utc>
-}
-
-impl SerializableProxy {
-    pub fn from(proxy: Proxy) -> SerializableProxy {
-        SerializableProxy {
-            sequence_number: proxy.sequence_number,
-            neighbor_1: proxy.neighbor_1,
-            neighbor_2: proxy.neighbor_2,
-            neighbor_1_hops: proxy.neighbor_1_hops,
-            neighbor_2_hops: proxy.neighbor_2_hops,
-            public_key: proxy.public_key.to_public_key_pem(rsa::pkcs8::LineEnding::LF).unwrap(),
-            used_last: proxy.used_last
-        }
-    }
-
-    pub fn to_proxy(self) -> Proxy {
-        Proxy {
-            sequence_number: self.sequence_number,
-            neighbor_1: self.neighbor_1,
-            neighbor_2: self.neighbor_2,
-            neighbor_1_hops: self.neighbor_1_hops,
-            neighbor_2_hops: self.neighbor_2_hops,
-            public_key: RsaPublicKey::from_public_key_pem(&*self.public_key).unwrap(),
-            used_last: self.used_last,
-        }
-    }
-
-    pub fn hashmap_to_serializable(proxies: HashMap<U256, Proxy>) -> HashMap<U256, SerializableProxy> {
-        let mut proxies_serial = HashMap::new();
-
-        for item in proxies {
-            proxies_serial.insert(item.0, SerializableProxy::from(item.1));
-        }
-
-        proxies_serial
-    }
-
-    pub fn hashmap_to_proxy(proxies: HashMap<U256, SerializableProxy>) -> HashMap<U256, Proxy> {
-        let mut proxies_serial = HashMap::new();
-
-        for item in proxies {
-            proxies_serial.insert(item.0, item.1.to_proxy());
-        }
-
-        proxies_serial
-    }
-
-    pub fn vec_to_serializable(proxies: Vec<Proxy>) -> Vec<SerializableProxy> {
-        let mut proxies_serial = vec![];
-
-        for proxy in proxies {
-            proxies_serial.push(SerializableProxy::from(proxy));
-        }
-
-        proxies_serial
-    }
-
-    pub fn vec_to_proxy(proxies_serial: Vec<SerializableProxy>) -> Vec<Proxy> {
-        let mut proxies = vec![];
-
-        for proxy in proxies_serial {
-            proxies.push(proxy.to_proxy());
-        }
-
-        proxies
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Proxy {
-    pub sequence_number: U256,
-    pub neighbor_1: CloveNode,
-    pub neighbor_2: CloveNode,
-    pub neighbor_1_hops: u16,
-    pub neighbor_2_hops: u16,
-    public_key: RsaPublicKey,
-    used_last: DateTime<Utc>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SerializableInitiatorRequest {
-    request_id: U256,
-    validator_required: bool,
-    proxies: Vec<SerializableProxy>,
-    proxy_id_associations: HashMap<U256, SerializableProxy>,
-    responses: Vec<CloveMessage>
-}
-
-impl SerializableInitiatorRequest {
-    pub fn from(initiator_request: InitiatorRequest) -> SerializableInitiatorRequest {
-        SerializableInitiatorRequest {
-            request_id: initiator_request.request_id,
-            validator_required: initiator_request.validator_required,
-            proxies: SerializableProxy::vec_to_serializable(initiator_request.proxies),
-            proxy_id_associations: SerializableProxy::hashmap_to_serializable(initiator_request.proxy_id_associations),
-            responses: initiator_request.responses
-        }
-    }
-
-    pub fn to_initiator_request(self) -> InitiatorRequest {
-        InitiatorRequest {
-            request_id: self.request_id,
-            validator_required: self.validator_required,
-            proxies: SerializableProxy::vec_to_proxy(self.proxies),
-            proxy_id_associations: SerializableProxy::hashmap_to_proxy(self.proxy_id_associations),
-            responses: self.responses
-        }
-    }
-
-    pub fn hashmap_to_serializable(proxies: HashMap<U256, InitiatorRequest>) -> HashMap<U256, SerializableInitiatorRequest> {
-        let mut proxies_serial = HashMap::new();
-
-        for item in proxies {
-            proxies_serial.insert(item.0, SerializableInitiatorRequest::from(item.1));
-        }
-
-        proxies_serial
-    }
-
-    pub fn hashmap_to_initiator_request(proxies: HashMap<U256, SerializableInitiatorRequest>) -> HashMap<U256, InitiatorRequest> {
-        let mut proxies_serial = HashMap::new();
-
-        for item in proxies {
-            proxies_serial.insert(item.0, item.1.to_initiator_request());
-        }
-
-        proxies_serial
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct InitiatorRequest {
-    request_id: U256,
-    validator_required: bool,
-    proxies: Vec<Proxy>,
-    proxy_id_associations: HashMap<U256, Proxy>,
-    responses: Vec<CloveMessage>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SerializableProxyRequest {
-    sequence_number: U256,
-    request_id: U256,
-    self_proxy_id: Option<U256>,
-    validator_required: bool,
-    initiator: SerializableProxy,
-    sent: DateTime<Utc>,
-    request: CloveMessage
-}
-
-impl SerializableProxyRequest {
-    pub fn from(initiator_request: ProxyRequest) -> SerializableProxyRequest {
-        SerializableProxyRequest {
-            sequence_number: initiator_request.sequence_number,
-            request_id: initiator_request.request_id,
-            self_proxy_id: initiator_request.self_proxy_id,
-            validator_required: initiator_request.validator_required,
-            initiator: SerializableProxy::from(initiator_request.initiator),
-            sent: initiator_request.sent,
-            request: initiator_request.request
-        }
-    }
-
-    pub fn to_proxy_request(self) -> ProxyRequest {
-        ProxyRequest {
-            sequence_number: self.sequence_number,
-            request_id: self.request_id,
-            self_proxy_id: self.self_proxy_id,
-            validator_required: self.validator_required,
-            initiator: self.initiator.to_proxy(),
-            sent: self.sent,
-            request: self.request
-        }
-    }
-
-    pub fn hashmap_to_serializable(proxies: HashMap<U256, ProxyRequest>) -> HashMap<U256, SerializableProxyRequest> {
-        let mut proxies_serial = HashMap::new();
-
-        for item in proxies {
-            proxies_serial.insert(item.0, SerializableProxyRequest::from(item.1));
-        }
-
-        proxies_serial
-    }
-
-    pub fn hashmap_to_proxy_request(proxies: HashMap<U256, SerializableProxyRequest>) -> HashMap<U256, ProxyRequest> {
-        let mut proxies_serial = HashMap::new();
-
-        for item in proxies {
-            proxies_serial.insert(item.0, item.1.to_proxy_request());
-        }
-
-        proxies_serial
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProxyRequest {
-    sequence_number: U256,
-    request_id: U256,
-    self_proxy_id: Option<U256>,
-    validator_required: bool,
-    initiator: Proxy,
-    sent: DateTime<Utc>,
-    request: CloveMessage
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SerializableGarlicCast {
@@ -1020,7 +435,7 @@ impl GarlicCast {
                 key_fragment: key_shards_vec[i].clone(),
                 sent: Utc::now(),
                 index: i as u8,
-                ida_count: count_actual as u8
+                ida_count: count_actual
             };
 
             cloves.push(clove);
@@ -1296,7 +711,7 @@ impl GarlicCast {
         if code == 2 || code == 3 {
             let n_2_good = self.forward_from_proxy_failed_multithreaded(&n_2_clove_node, &cloves[1], &proxy).await;
 
-            if n_2_good.is_ok() {
+            return if n_2_good.is_ok() {
                 let n_2_replaced = n_2_good.unwrap();
 
                 if n_2_replaced.is_some() {
@@ -1305,7 +720,7 @@ impl GarlicCast {
                     self.replace_proxy(&proxy, &new_proxy_n_2);
                     proxy = new_proxy_n_2;
                 }
-                return Some(proxy);
+                Some(proxy)
             } else {
                 let try_update = self.cache.get_alt(n_1_clove_node);
 
@@ -1317,7 +732,7 @@ impl GarlicCast {
                 }
                 self.cache.remove_sequence(proxy.neighbor_2.sequence_number);
                 self.remove_proxy(&proxy);
-                return None;
+                None
             }
         }
 
@@ -2827,7 +2242,7 @@ impl GarlicCast {
                                     if msg_from_proxy.is_request() {
                                         let request_info = self.requests_as_initiator.get_mut(&msg_from_proxy.request_id().unwrap().request_id);
 
-                                        if request_info.is_some() {
+                                        return if request_info.is_some() {
                                             // THIS NODE IS THE INITIATOR, NOT THE PROXY
                                             let proxy_request = request_info.unwrap();
 
@@ -2853,7 +2268,7 @@ impl GarlicCast {
                                             self.collected_messages.remove(&clove.request_id);
 
                                             //println!("{} :: CLOVEMESSAGE :: {} :: {:?}", Utc::now(), self.local_node.address, trimmed_msg.clone().unwrap());
-                                            return Ok(Some(msg_from_proxy));
+                                            Ok(Some(msg_from_proxy))
                                         } else {
                                             // THIS NODE IS THE PROXY, NOT THE INITIATOR
                                             let initiator;
@@ -2885,7 +2300,7 @@ impl GarlicCast {
                                             self.collected_messages.remove(&clove.request_id);
 
                                             //println!("{} :: CLOVEMESSAGE :: {} :: {:?}", Utc::now(), self.local_node.address, msg_from_proxy.clone());
-                                            return Ok(self.manage_proxy_message(msg_from_proxy).await);
+                                            Ok(self.manage_proxy_message(msg_from_proxy).await)
                                         }
                                     } else {
                                         // Big failure
