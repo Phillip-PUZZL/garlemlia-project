@@ -25,6 +25,8 @@ pub struct MessageChannel {
     pub msg: GarlemliaMessage,
 }
 
+/// We want this trait so that the message handler can be used as a "hook" for a simulator
+/// to process messages without sending over IP
 #[async_trait]
 pub trait GMessage: Send + Sync {
     fn create(channel_count: u8) -> Box<dyn GMessage> where Self: Sized;
@@ -51,18 +53,21 @@ impl Debug for dyn GMessage {
     }
 }
 
+/// Struct containing a MessageChannel used for receiving communications across threads
 #[derive(Debug, Clone)]
 pub struct HandlerChannelReceiver {
     id: u8,
     rx: Arc<Mutex<UnboundedReceiver<MessageChannel>>>,
 }
 
+/// Struct containing a MessageChannel used for sending communications across threads
 #[derive(Debug, Clone)]
 pub struct HandlerChannelSender {
     id: u8,
     pub tx: Arc<Mutex<UnboundedSender<MessageChannel>>>,
 }
 
+/// Struct containing the available and unavailable send / receive channels
 #[derive(Debug, Default, Clone)]
 pub struct GarlemliaMessageHandler {
     available_rx: Arc<Mutex<Vec<HandlerChannelReceiver>>>,
@@ -78,8 +83,11 @@ impl GMessage for GarlemliaMessageHandler {
         let mut rx_pool = Vec::with_capacity(channel_count as usize);
         let mut tx_pool = Vec::with_capacity(channel_count as usize);
 
+        // Loop through to channel count
         for i in 0..channel_count {
+            // Generate tx and rx
             let (tx, rx) = mpsc::unbounded_channel::<MessageChannel>();
+            // Add tx and rx to rx and tx pools
             rx_pool.push(HandlerChannelReceiver {
                 id: i,
                 rx: Arc::new(Mutex::new(rx)),
@@ -90,6 +98,7 @@ impl GMessage for GarlemliaMessageHandler {
             });
         }
 
+        // Initialize pools
         Box::new(GarlemliaMessageHandler {
             available_rx: Arc::new(Mutex::new(rx_pool)),
             available_tx: Arc::new(Mutex::new(tx_pool)),
@@ -100,17 +109,23 @@ impl GMessage for GarlemliaMessageHandler {
 
     /// Look up the “unavailable” TX for this address. (i.e., a TX currently assigned to that address)
     async fn send_tx(&self, addr: SocketAddr, msg: MessageChannel) -> Result<(), MessageError> {
+        // Get tx from mapped address
         let map = self.unavailable_tx.lock().await;
         let tx_info = map.get(&addr.to_string());
 
+        // Verify tx channel exists
         match tx_info {
             Some(tx_good) => {
+                // Lock tx channel
                 let tx = tx_good.tx.lock().await;
+                // Verify not closed
                 if tx.is_closed() {
                     Err(MessageError::TXDropped)
                 } else {
+                    // Send to rx
                     let send_info = tx.send(msg);
 
+                    // Verify tx sent
                     if send_info.is_err() {
                         Err(MessageError::TXSendError)
                     } else {
@@ -124,6 +139,7 @@ impl GMessage for GarlemliaMessageHandler {
         }
     }
 
+    /// Function to send a message without mapping rx / tx channels
     async fn send_no_recv(&self, socket: &UdpSocket, _from_node: Node, target: &SocketAddr, msg: &GarlemliaMessage) -> Result<Option<GarlemliaMessage>, MessageError> {
         // Now actually send the UDP message
         let bytes = serde_json::to_vec(msg)
@@ -139,6 +155,7 @@ impl GMessage for GarlemliaMessageHandler {
         // Try once outside the loop
         {
             let mut rx_pool = self.available_rx.lock().await;
+            // Attempt to get a rx channel from the pool
             if !rx_pool.is_empty() {
                 need_rx = false;
                 let mut tx_pool = self.available_tx.lock().await;
@@ -220,7 +237,7 @@ impl GMessage for GarlemliaMessageHandler {
             }
         };
 
-        // Move the assigned TX/RX back to “available”
+        // Remove the TX from the unavailable set
         let mut tx_map = self.unavailable_tx.lock().await;
         let maybe_tx = tx_map.remove(&src.to_string());
 
@@ -228,12 +245,14 @@ impl GMessage for GarlemliaMessageHandler {
         let mut rx_map = self.unavailable_rx.lock().await;
         let maybe_rx2 = rx_map.remove(&src.to_string());
 
+        // Add TX back to available pool
         if let Some(tx) = maybe_tx {
             self.available_tx.lock().await.push(tx);
         } else {
             println!("Warning: Could not find matching TX for {:?}", src);
         }
 
+        // Add RX back to available tool
         if let Some(rx) = maybe_rx2 {
             self.available_rx.lock().await.push(rx);
         } else {
@@ -255,24 +274,27 @@ impl GMessage for GarlemliaMessageHandler {
     }
 }
 
+/// Struct containing the preliminary chunk information for a file
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ChunkInfo {
+pub struct InitialChunkInfo {
     pub index: usize,
     pub chunk_id: U256,
     pub size: usize
 }
 
+/// Response type
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaData {
     Value { id: U256, value: String },
     Validator { id: U256, proxy_ids: Vec<U256>, proxies: HashMap<U256, SocketAddr> },
     FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: RotatingHash, key_location: RotatingHash },
-    MetaData { id: U256, file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
+    MetaData { id: U256, file_id: U256, chunk_info: Vec<InitialChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
     FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location: RotatingHash },
     FileChunk { id: U256, size: usize }
 }
 
 impl GarlemliaData {
+    /// Get ID from response
     pub fn get_id(&self) -> U256 {
         match self {
             GarlemliaData::Value { id, .. } => *id,
@@ -284,6 +306,7 @@ impl GarlemliaData {
         }
     }
 
+    /// Function to transpose the information given to a form in which it is more easily stored
     pub fn store(&mut self) {
         match self {
             GarlemliaData::FileName { id, name, file_type, size, categories, metadata_location, key_location } => {
@@ -331,6 +354,7 @@ impl GarlemliaData {
         }
     }
 
+    /// Function for converting a FindRequest into a Response type w/ properly mapped values
     pub fn get_response(&self, request: Option<GarlemliaFindRequest>) -> Option<GarlemliaResponse> {
         match self {
             GarlemliaData::Value { value, .. } => {
@@ -396,6 +420,7 @@ impl GarlemliaData {
         }
     }
 
+    /// Function for turning a chunk request into a response
     pub fn get_chunk_info(&self, data: Vec<u8>, request_id: U256, sender: Node) -> Option<GarlemliaResponse> {
         match self {
             GarlemliaData::FileChunk { id, size } => {
@@ -413,6 +438,7 @@ impl GarlemliaData {
         }
     }
 
+    /// Function for converting a chunk request into its proper chunk part responses
     pub fn get_chunk_responses(&self, mut data: Vec<u8>, request_id: U256) -> Option<Vec<GarlemliaResponse>> {
         match self {
             GarlemliaData::FileChunk { id, .. } => {
@@ -446,6 +472,7 @@ impl GarlemliaData {
         }
     }
 
+    /// Function for checking whether this data is a file chunk
     pub fn is_chunk(&self) -> bool {
         match self {
             GarlemliaData::FileChunk { .. } => true,
@@ -454,12 +481,13 @@ impl GarlemliaData {
     }
 }
 
+/// Enum containing requests for storing content
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaStoreRequest {
     Value { id: U256, value: String },
     Validator { id: U256, proxy_id: U256 },
     FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: RotatingHash, key_location: RotatingHash },
-    MetaData { id: U256, file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
+    MetaData { id: U256, file_id: U256, chunk_info: Vec<InitialChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
     FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location: RotatingHash },
     FileChunkInfo { id: U256, request_id: U256, chunk_size: usize, parts_count: usize },
     FileChunkPart { id: U256, index: usize, part_size: usize, data: Vec<u8> }
@@ -478,6 +506,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Convert this Store Request into its appropriate data type
     pub fn to_store_data(&self) -> Option<GarlemliaData> {
         match self {
             GarlemliaStoreRequest::Value { id, value } => {
@@ -527,6 +556,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Get the proxy_id of a validator peer from the request
     pub fn validator_get_proxy_id(&self) -> Option<U256> {
         match self {
             GarlemliaStoreRequest::Validator { proxy_id, .. } => Some(*proxy_id),
@@ -534,6 +564,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Check if this is a validator store request
     pub fn is_validator(&self) -> bool {
         match self {
             GarlemliaStoreRequest::Validator { .. } => true,
@@ -541,6 +572,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Get the chunk part data from the request
     pub fn get_chunk_part_data(&self) -> Option<Vec<u8>> {
         match self {
             GarlemliaStoreRequest::FileChunkPart { data, .. } => Some(data.clone()),
@@ -548,6 +580,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Get the chunk part index from the request
     pub fn get_chunk_part_index(&self) -> Option<usize> {
         match self {
             GarlemliaStoreRequest::FileChunkPart { index, .. } => Some(index.clone()),
@@ -555,6 +588,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Get the file chunk info from the request
     pub fn get_file_chunk_info(&self) -> Option<FileChunkInfo> {
         match self {
             GarlemliaStoreRequest::FileChunkInfo { id, request_id, chunk_size, parts_count } => {
@@ -570,6 +604,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Get the chunk part info from the request
     pub fn get_chunk_part_info(&self) -> Option<ChunkPartInfo> {
         match self {
             GarlemliaStoreRequest::FileChunkPart { part_size, index, .. } => {
@@ -582,6 +617,8 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Get the chunk part info from the request, this is a proxy so we want the data as well
+    /// since we don't store it on the disk
     pub fn get_proxy_chunk_part_info(&self) -> Option<ProxyChunkPartInfo> {
         match self {
             GarlemliaStoreRequest::FileChunkPart { part_size, index, data, .. } => {
@@ -595,6 +632,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Check if this is a chunk part
     pub fn is_chunk_part(&self) -> bool {
         match self {
             GarlemliaStoreRequest::FileChunkPart { .. } => true,
@@ -602,6 +640,7 @@ impl GarlemliaStoreRequest {
         }
     }
 
+    /// Check if this is the chunk info
     pub fn is_chunk_info(&self) -> bool {
         match self {
             GarlemliaStoreRequest::FileChunkInfo { .. } => true,
@@ -610,6 +649,7 @@ impl GarlemliaStoreRequest {
     }
 }
 
+/// Enum containing request information for searches
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaFindRequest {
     Key { id: U256, request_id: U256 },
@@ -632,12 +672,13 @@ impl GarlemliaFindRequest {
     }
 }
 
+/// Enum containing response information
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaResponse {
     Value { value: String },
     Validator { proxy: Option<SocketAddr> },
     FileName { name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: Vec<HashLocation>, key_location: Vec<HashLocation> },
-    MetaData { file_id: U256, chunk_info: Vec<ChunkInfo>, downloads: usize, availability: f64 },
+    MetaData { file_id: U256, chunk_info: Vec<InitialChunkInfo>, downloads: usize, availability: f64 },
     FileKey { enc_file_id: U256, decryption_key: String },
     ChunkPart { request_id: U256, chunk_id: U256, part_size: usize, index: usize, data: Vec<u8> },
     ChunkPartInfo { chunk_id: U256, part_size: usize, index: usize },
@@ -645,6 +686,8 @@ pub enum GarlemliaResponse {
 }
 
 impl GarlemliaResponse {
+    /// If the response is for file information, it adds that information to the respective
+    /// area in a FileInfo struct
     pub fn add_to_file_information(&self, mut file_info: FileInfo) -> Option<FileInfo> {
         match self {
             GarlemliaResponse::MetaData { file_id, chunk_info, .. } => {
@@ -670,6 +713,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Check if this is file info
     pub fn is_file_chunk_info(&self) -> bool {
         match self {
             GarlemliaResponse::FileChunkInfo { .. } => true,
@@ -677,6 +721,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Check if this is a chunk part
     pub fn is_chunk_part(&self) -> bool {
         match self {
             GarlemliaResponse::ChunkPart { .. } => true,
@@ -684,6 +729,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Check if this is chunk part info
     pub fn is_chunk_part_info(&self) -> bool {
         match self {
             GarlemliaResponse::ChunkPartInfo { .. } => true,
@@ -691,6 +737,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Get chunk ID if this is file info related
     pub fn get_chunk_id(&self) -> Option<U256> {
         match self {
             GarlemliaResponse::FileChunkInfo { chunk_id, .. } => Some(*chunk_id),
@@ -700,6 +747,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Get request ID from response
     pub fn get_request_id(&self) -> Option<U256> {
         match self {
             GarlemliaResponse::FileChunkInfo { request_id, .. } => Some(*request_id),
@@ -708,6 +756,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Get the index of a chunk part response
     pub fn get_chunk_part_index(&self) -> Option<usize> {
         match self {
             GarlemliaResponse::ChunkPart { index, .. } => Some(*index),
@@ -716,6 +765,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Return the information from a chunk info response
     pub fn get_file_chunk_info(&self) -> Option<FileChunkInfo> {
         match self {
             GarlemliaResponse::FileChunkInfo { request_id, chunk_id, chunk_size, parts_count, .. } => {
@@ -731,6 +781,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Return the information from a chunk info response as a proxy
     pub fn get_proxy_file_chunk_info(&self) -> Option<ProxyFileChunkInfo> {
         match self {
             GarlemliaResponse::FileChunkInfo { request_id, chunk_id, chunk_size, parts_count, .. } => {
@@ -746,6 +797,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Get the chunk part / part info from a response
     pub fn get_chunk_part_info(&self) -> Option<ChunkPartInfo> {
         match self {
             GarlemliaResponse::ChunkPart { part_size, index, .. } => {
@@ -764,6 +816,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Get the chunk part as a proxy
     pub fn get_proxy_chunk_part_info(&self) -> Option<ProxyChunkPartInfo> {
         match self {
             GarlemliaResponse::ChunkPart { part_size, index, data, .. } => {
@@ -777,6 +830,7 @@ impl GarlemliaResponse {
         }
     }
 
+    /// Pull out just the chunk part data from the response
     pub fn get_chunk_part_data(&self) -> Option<Vec<u8>> {
         match self {
             GarlemliaResponse::ChunkPart { data, .. } => Some(data.clone()),
@@ -785,6 +839,7 @@ impl GarlemliaResponse {
     }
 }
 
+/// Enum containing information for the overarching Garlemlia Message
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaMessage {
     FindNode { id: U256, sender: Node },

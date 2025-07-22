@@ -12,7 +12,7 @@ use tokio::fs;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use crate::helper_functions::helper_functions::u256_random;
-use crate::structs::garlemlia_message::ChunkInfo;
+use crate::structs::garlemlia_message::InitialChunkInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileInfo {
@@ -27,9 +27,9 @@ pub struct FileInfo {
     file_id: Option<U256>,
     enc_file_id: Option<U256>,
     decryption_key: Option<String>,
-    downloaded_chunks: Vec<ChunkInfo>,
-    pub(crate) needed_chunks: Vec<ChunkInfo>,
-    all_chunks: Vec<ChunkInfo>
+    downloaded_chunks: Vec<InitialChunkInfo>,
+    pub(crate) needed_chunks: Vec<InitialChunkInfo>,
+    all_chunks: Vec<InitialChunkInfo>
 }
 
 impl FileInfo {
@@ -79,7 +79,7 @@ impl FileInfo {
         self.request_id
     }
 
-    pub fn set_chunk_info(&mut self, chunks: Vec<ChunkInfo>) {
+    pub fn set_chunk_info(&mut self, chunks: Vec<InitialChunkInfo>) {
         self.needed_chunks = chunks.clone();
         self.all_chunks = chunks;
     }
@@ -491,11 +491,11 @@ pub struct FileUpload {
     pub decryption_key: String,
     pub metadata_location: RotatingHash,
     pub key_location: RotatingHash,
-    pub chunks: Vec<ChunkInfo>
+    pub chunks: Vec<InitialChunkInfo>
 }
 
 impl FileUpload {
-    pub fn new(information: FileInformation, chunks: Vec<ChunkInfo>, rotation_time_hours: f64) -> FileUpload {
+    pub fn new(information: FileInformation, chunks: Vec<InitialChunkInfo>, rotation_time_hours: f64) -> FileUpload {
         FileUpload {
             id: information.id,
             name: information.name,
@@ -582,7 +582,7 @@ impl FileUpload {
         })
     }
 
-    pub async fn split_into_chunks(encrypted_file: Box<Path>, num_chunks: usize) -> std::io::Result<Vec<ChunkInfo>> {
+    pub async fn split_into_chunks(encrypted_file: Box<Path>, num_chunks: usize) -> std::io::Result<Vec<InitialChunkInfo>> {
         let mut file = OpenOptions::new().read(true).open(&encrypted_file).await?;
         let file_size = file.metadata().await?.len() as usize;
 
@@ -635,7 +635,7 @@ impl FileUpload {
                 chunk_file.write_all(&chunk_data).await?;
             }
 
-            let chunk_info = ChunkInfo {
+            let chunk_info = InitialChunkInfo {
                 index: i,
                 chunk_id: chunk_u256,
                 size: this_chunk_size,

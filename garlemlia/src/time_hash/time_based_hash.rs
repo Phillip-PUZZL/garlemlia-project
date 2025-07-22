@@ -8,12 +8,14 @@ use crate::helper_functions::helper_functions::u256_random;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Struct containing a hash location and the time with which it is associated
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct HashLocation {
     pub time: DateTime<Utc>,
     pub id: U256
 }
 
+/// Struct containing the seed for a rotating hash, how often it rotates, and when it was stored
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RotatingHash {
     seed: U256,
@@ -43,6 +45,7 @@ impl RotatingHash {
         self.stored_on = Some(Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour(), 0, 0).unwrap());
     }
 
+    /// Get the current value of the hash based on its seed
     pub fn get_current(&self) -> Option<HashLocation> {
         match self.stored_on {
             Some(stored_time) => {
@@ -64,6 +67,7 @@ impl RotatingHash {
         }
     }
 
+    /// Get next <count> IDs for the hash
     pub fn get_next(&self, count: u8, interval: f64) -> Option<Vec<HashLocation>> {
         match self.stored_on {
             Some(stored_time) => {
@@ -95,6 +99,7 @@ impl RotatingHash {
         }
     }
 
+    /// Get amount of time before next rotation
     pub fn next_rotation(&self) -> Option<f64> {
         match self.stored_on {
             Some(stored_time) => {
@@ -112,6 +117,7 @@ impl RotatingHash {
         }
     }
 
+    /// Compute the actual ID of the hash based on its seed
     pub fn compute_rotating_id(seed: U256, stored_on: DateTime<Utc>, rotation_hours: f64, time: DateTime<Utc>) -> Option<U256> {
         let rotation_seconds = (rotation_hours * 3600.0).round() as i64;
         let elapsed = time.timestamp() - stored_on.timestamp();

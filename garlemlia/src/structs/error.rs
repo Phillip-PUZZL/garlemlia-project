@@ -14,6 +14,7 @@ pub enum MessageError {
 
 impl From<std::io::Error> for MessageError {
     fn from(err: std::io::Error) -> Self {
+        // Convert IoError to string
         MessageError::IoError(err.to_string())
     }
 }

@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 use crate::file_utils::garlemlia_files::{FileStorage, FileUpload};
 use crate::helper_functions::helper_functions::u256_random;
 use crate::structs::constants::SOCKET_FILE_DATA_MAX;
-use crate::structs::garlemlia_message::{ChunkInfo, GarlemliaMessage, GarlemliaResponse, GarlemliaStoreRequest};
+use crate::structs::garlemlia_message::{InitialChunkInfo, GarlemliaMessage, GarlemliaResponse, GarlemliaStoreRequest};
 use crate::structs::node::Node;
 
 /// GARLIC CAST STRUCTS
 
+/// Clove struct containing information for messages which pass through this node
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Clove {
     pub sequence_number: U256,
@@ -27,12 +28,14 @@ impl Clove {
     }
 }
 
+/// Association between a clove and its sender
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CloveData {
     pub clove: Clove,
     pub from: Node
 }
 
+/// Associating a sequence number with a node
 #[derive(Clone, Debug, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct CloveNode {
     // The sequence number used when sending to this node
@@ -42,12 +45,14 @@ pub struct CloveNode {
     pub node: Node
 }
 
+/// Associate clove message with being a file chunk
 #[derive(Clone, Debug)]
 pub struct FileCloveMessage {
     pub is_file_chunk: bool,
     pub message: CloveMessage
 }
 
+/// Association between a request ID and the index of that clove in the Reed-Solomon erasure code
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct CloveRequestID {
     pub request_id: U256,
@@ -63,6 +68,7 @@ impl CloveRequestID {
     }
 }
 
+/// Actual Clove Message types
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum CloveMessage {
     RequestProxy {
@@ -105,6 +111,7 @@ pub enum CloveMessage {
 }
 
 impl CloveMessage {
+    /// Generate clove messages for file metadata
     pub async fn file_metadata_upload(file_info: FileUpload, request_id: Option<U256>) -> Vec<FileCloveMessage> {
         let mut file_messages = vec![];
 
@@ -135,7 +142,8 @@ impl CloveMessage {
         file_messages
     }
 
-    pub async fn file_chunk_to_upload(chunk: ChunkInfo, file_storage: FileStorage, request_id: Option<U256>) -> Vec<FileCloveMessage> {
+    /// Generate Clove messages for the actual file chunk data
+    pub async fn file_chunk_to_upload(chunk: InitialChunkInfo, file_storage: FileStorage, request_id: Option<U256>) -> Vec<FileCloveMessage> {
         let mut chunk_part_messages = vec![];
 
         let yeet_request_id = request_id.unwrap_or(u256_random());
@@ -220,6 +228,7 @@ impl CloveMessage {
     }
 }
 
+/// Garlic Message types
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlicMessage {
     FindProxy {
@@ -279,6 +288,7 @@ impl GarlicMessage {
         }
     }
 
+    /// Updating sequence number of message - used when sending to what was once an alt node
     pub fn update_sequence_number(&mut self, new_sequence_number: U256) {
         match self {
             GarlicMessage::Forward { clove, .. } => {

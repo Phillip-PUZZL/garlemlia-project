@@ -2,8 +2,11 @@ use std::collections::HashMap;
 use primitive_types::U256;
 use serde::{Deserialize, Serialize};
 
+/// State information for shared memory processing
 #[derive(Debug, Clone)]
 pub struct ProcessingCheck {
+    // true = shared memory in use by another thread
+    // false = shared memory not in use by another thread
     is_processing: bool
 }
 
@@ -14,21 +17,26 @@ impl ProcessingCheck {
         }
     }
 
+    // Check current state of shared memory
     pub fn check(&self) -> bool {
         self.is_processing
     }
 
+    // Set current state of shared memory
     pub fn set(&mut self, state: bool) {
         self.is_processing = state;
     }
 }
 
+/// Struct to hold information on chunk parts
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChunkPartInfo {
     pub index: usize,
     pub size: usize
 }
 
+/// Struct to hold information and the data for chunk parts - used by proxies when awaiting all
+/// chunk part data to come in
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyChunkPartInfo {
     pub index: usize,
@@ -36,6 +44,7 @@ pub struct ProxyChunkPartInfo {
     pub data: Vec<u8>
 }
 
+/// Struct to hold information for a file chunk, including chunk parts information
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileChunkInfo {
     pub request_id: U256,
@@ -45,6 +54,8 @@ pub struct FileChunkInfo {
     pub parts_info: Vec<ChunkPartInfo>
 }
 
+/// Struct to hold information for a file chunk, including chunk parts information
+/// This one is specifically used for proxies awaiting all chunk parts before forwarding
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyFileChunkInfo {
     pub request_id: U256,
@@ -54,139 +65,142 @@ pub struct ProxyFileChunkInfo {
     pub parts_info: Vec<ProxyChunkPartInfo>
 }
 
+/// Struct for the garlemlia instance to hold which maintains state data for file chunks this node
+/// currently provides for others to download, file chunks which this node is actively downloading,
+/// and file chunks which this node is actively attempting to forward
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkPartAssociations {
-    store_chunks: Vec<FileChunkInfo>,
-    temp_chunks: Vec<FileChunkInfo>,
-    proxy_chunks: Vec<ProxyFileChunkInfo>,
+    chunks_storing: Vec<FileChunkInfo>,
+    chunks_downloading: Vec<FileChunkInfo>,
+    chunks_proxy_for: Vec<ProxyFileChunkInfo>,
     pub already_has: HashMap<U256, U256>
 }
 
 impl ChunkPartAssociations {
     pub fn new() -> ChunkPartAssociations {
         ChunkPartAssociations {
-            store_chunks: vec![],
-            temp_chunks: vec![],
-            proxy_chunks: vec![],
+            chunks_storing: vec![],
+            chunks_downloading: vec![],
+            chunks_proxy_for: vec![],
             already_has: HashMap::new()
         }
     }
 
-    pub fn add_store_chunk(&mut self, store_chunk: FileChunkInfo) {
-        self.store_chunks.push(store_chunk);
+    pub fn add_to_chunk_storage(&mut self, store_chunk: FileChunkInfo) {
+        self.chunks_storing.push(store_chunk);
     }
 
-    pub fn add_temp_chunk(&mut self, temp_chunk: FileChunkInfo) {
-        self.temp_chunks.push(temp_chunk);
+    pub fn add_to_chunk_downloads(&mut self, temp_chunk: FileChunkInfo) {
+        self.chunks_downloading.push(temp_chunk);
     }
 
-    pub fn add_proxy_chunk(&mut self, proxy_chunk: ProxyFileChunkInfo) {
-        self.proxy_chunks.push(proxy_chunk);
+    pub fn add_to_chunk_proxy(&mut self, proxy_chunk: ProxyFileChunkInfo) {
+        self.chunks_proxy_for.push(proxy_chunk);
     }
 
-    pub fn remove_store_chunk(&mut self, chunk_id: U256) {
-        for i in 0..self.store_chunks.len() {
-            if self.store_chunks[i].chunk_id == chunk_id {
-                self.store_chunks.remove(i);
+    pub fn remove_from_chunk_storage(&mut self, chunk_id: U256) {
+        for i in 0..self.chunks_storing.len() {
+            if self.chunks_storing[i].chunk_id == chunk_id {
+                self.chunks_storing.remove(i);
                 break;
             }
         }
     }
 
-    pub fn remove_temp_chunk(&mut self, temp_chunk_id: U256) {
-        for i in 0..self.temp_chunks.len() {
-            if self.temp_chunks[i].chunk_id == temp_chunk_id {
-                self.temp_chunks.remove(i);
+    pub fn remove_from_chunk_downloads(&mut self, temp_chunk_id: U256) {
+        for i in 0..self.chunks_downloading.len() {
+            if self.chunks_downloading[i].chunk_id == temp_chunk_id {
+                self.chunks_downloading.remove(i);
                 break;
             }
         }
     }
 
-    pub fn remove_proxy_chunk(&mut self, proxy_chunk_id: U256) {
-        for i in 0..self.proxy_chunks.len() {
-            if self.proxy_chunks[i].chunk_id == proxy_chunk_id {
-                self.proxy_chunks.remove(i);
+    pub fn remove_from_chunk_proxy(&mut self, proxy_chunk_id: U256) {
+        for i in 0..self.chunks_proxy_for.len() {
+            if self.chunks_proxy_for[i].chunk_id == proxy_chunk_id {
+                self.chunks_proxy_for.remove(i);
                 break;
             }
         }
     }
 
-    pub fn is_store_chunk(&self, chunk_id: U256) -> bool {
-        for i in 0..self.store_chunks.len() {
-            if self.store_chunks[i].chunk_id == chunk_id {
+    pub fn am_storing_chunk(&self, chunk_id: U256) -> bool {
+        for i in 0..self.chunks_storing.len() {
+            if self.chunks_storing[i].chunk_id == chunk_id {
                 return true;
             }
         }
         false
     }
 
-    pub fn is_temp_chunk(&self, chunk_id: U256) -> bool {
-        for i in 0..self.temp_chunks.len() {
-            if self.temp_chunks[i].chunk_id == chunk_id {
+    pub fn am_downloading_chunk(&self, chunk_id: U256) -> bool {
+        for i in 0..self.chunks_downloading.len() {
+            if self.chunks_downloading[i].chunk_id == chunk_id {
                 return true;
             }
         }
         false
     }
 
-    pub fn is_proxy_chunk(&self, chunk_id: U256) -> bool {
-        for i in 0..self.proxy_chunks.len() {
-            if self.proxy_chunks[i].chunk_id == chunk_id {
+    pub fn am_proxy_for_chunk(&self, chunk_id: U256) -> bool {
+        for i in 0..self.chunks_proxy_for.len() {
+            if self.chunks_proxy_for[i].chunk_id == chunk_id {
                 return true;
             }
         }
         false
     }
 
-    pub fn get_store_chunk_mut(&mut self, chunk_id: U256) -> Option<&mut FileChunkInfo> {
-        for i in 0..self.store_chunks.len() {
-            if self.store_chunks[i].chunk_id == chunk_id {
-                return Some(&mut self.store_chunks[i]);
+    pub fn get_mut_chunk_stored(&mut self, chunk_id: U256) -> Option<&mut FileChunkInfo> {
+        for i in 0..self.chunks_storing.len() {
+            if self.chunks_storing[i].chunk_id == chunk_id {
+                return Some(&mut self.chunks_storing[i]);
             }
         }
         None
     }
 
-    pub fn get_temp_chunk_mut(&mut self, chunk_id: U256) -> Option<&mut FileChunkInfo> {
-        for i in 0..self.temp_chunks.len() {
-            if self.temp_chunks[i].chunk_id == chunk_id {
-                return Some(&mut self.temp_chunks[i]);
+    pub fn get_mut_chunk_downloading(&mut self, chunk_id: U256) -> Option<&mut FileChunkInfo> {
+        for i in 0..self.chunks_downloading.len() {
+            if self.chunks_downloading[i].chunk_id == chunk_id {
+                return Some(&mut self.chunks_downloading[i]);
             }
         }
         None
     }
 
-    pub fn get_proxy_chunk_mut(&mut self, chunk_id: U256) -> Option<&mut ProxyFileChunkInfo> {
-        for i in 0..self.proxy_chunks.len() {
-            if self.proxy_chunks[i].chunk_id == chunk_id {
-                return Some(&mut self.proxy_chunks[i]);
+    pub fn get_mut_chunk_proxy(&mut self, chunk_id: U256) -> Option<&mut ProxyFileChunkInfo> {
+        for i in 0..self.chunks_proxy_for.len() {
+            if self.chunks_proxy_for[i].chunk_id == chunk_id {
+                return Some(&mut self.chunks_proxy_for[i]);
             }
         }
         None
     }
 
-    pub fn get_store_chunk_request_id(&self, chunk_id: U256) -> Option<U256> {
-        for i in 0..self.store_chunks.len() {
-            if self.store_chunks[i].chunk_id == chunk_id {
-                return Some(self.store_chunks[i].request_id);
+    pub fn get_stored_chunk_from_request_id(&self, chunk_id: U256) -> Option<U256> {
+        for i in 0..self.chunks_storing.len() {
+            if self.chunks_storing[i].chunk_id == chunk_id {
+                return Some(self.chunks_storing[i].request_id);
             }
         }
         None
     }
 
-    pub fn get_temp_chunk_request_id(&self, chunk_id: U256) -> Option<U256> {
-        for i in 0..self.temp_chunks.len() {
-            if self.temp_chunks[i].chunk_id == chunk_id {
-                return Some(self.temp_chunks[i].request_id);
+    pub fn get_downloading_chunk_from_request_id(&self, chunk_id: U256) -> Option<U256> {
+        for i in 0..self.chunks_downloading.len() {
+            if self.chunks_downloading[i].chunk_id == chunk_id {
+                return Some(self.chunks_downloading[i].request_id);
             }
         }
         None
     }
 
-    pub fn get_proxy_chunk_request_id(&self, chunk_id: U256) -> Option<U256> {
-        for i in 0..self.proxy_chunks.len() {
-            if self.proxy_chunks[i].chunk_id == chunk_id {
-                return Some(self.proxy_chunks[i].request_id);
+    pub fn get_proxy_chunk_from_request_id(&self, chunk_id: U256) -> Option<U256> {
+        for i in 0..self.chunks_proxy_for.len() {
+            if self.chunks_proxy_for[i].chunk_id == chunk_id {
+                return Some(self.chunks_proxy_for[i].request_id);
             }
         }
         None

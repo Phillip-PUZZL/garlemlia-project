@@ -9,6 +9,7 @@ use crate::structs::bucket::KBucket;
 use crate::structs::garlemlia_message::{GMessage, GarlemliaMessage};
 use crate::structs::node::Node;
 
+/// Routing table struct whose information is serializable and can be stored in a file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializableRoutingTable {
     pub local_node: Node,
@@ -31,6 +32,7 @@ impl SerializableRoutingTable {
     }
 }
 
+/// Routing table object
 // TODO: Implement last_seen information for nodes in routing table
 #[derive(Debug, Clone)]
 pub struct RoutingTable {
@@ -46,6 +48,7 @@ impl RoutingTable {
         }
     }
 
+    /// Set routing table
     pub async fn update_from(&mut self, other: RoutingTable) {
         self.local_node = other.local_node().clone();
         let mut self_buckets = self.buckets.lock().await;
@@ -65,6 +68,7 @@ impl RoutingTable {
         self.buckets.lock().await.clone()
     }
 
+    /// Get bucket index for a specified node ID
     pub fn bucket_index(&self, node_id: U256) -> u8 {
         let xor_distance = self.local_node.id ^ node_id;
 
@@ -75,6 +79,7 @@ impl RoutingTable {
         (255 - xor_distance.leading_zeros()) as u8
     }
 
+    /// Get flat vector of all nodes in my routing table
     pub async fn flat_nodes(&self) -> Vec<Node> {
         self.buckets
             .lock()
@@ -84,6 +89,7 @@ impl RoutingTable {
             .collect()
     }
 
+    /// Add a node into the routing table at its specified bucket index
     pub async fn insert_direct(&mut self, node: Node) {
         let index = self.bucket_index(node.id);
         self.buckets
@@ -94,6 +100,7 @@ impl RoutingTable {
             .insert(node);
     }
 
+    /// Check if KBucket is full, and if it is not then add a node
     pub async fn check_and_update_bucket(&mut self, node: Node, index: u8) -> bool {
         let mut self_buckets = self.buckets.lock().await;
         if let Some(bucket) = self_buckets.get_mut(&index) {
@@ -114,6 +121,7 @@ impl RoutingTable {
         }
     }
 
+    /// Adding a node from the main event loop, this involves pinging the LRU node
     pub async fn add_node_from_responder(&mut self, message_handler: Arc<Box<dyn GMessage>>, node: Node, socket: Arc<UdpSocket>) {
         if self.local_node.id == node.id {
             return;
@@ -129,6 +137,8 @@ impl RoutingTable {
         let local_node = self.local_node.clone();
         let node_clone = node.clone();
         let socket_clone = Arc::clone(&socket);
+        // Spawn a new thread for this since we want to continue on working on other stuff after
+        // TODO: have a thread pool for this maybe?
         tokio::spawn(async move {
             let bucket_clone;
             {
@@ -141,6 +151,7 @@ impl RoutingTable {
                 };
 
                 {
+                    // Send message to LRU node
                     // If sending fails, log the error and continue.
                     if let Err(e) = mh.send(&socket_clone, local_node.clone(), &lru_node.address, &ping_msg).await {
                         eprintln!("Failed to send ping to {}: {:?}", lru_node.address, e);
@@ -153,6 +164,8 @@ impl RoutingTable {
                 }
 
                 {
+                    // Receive response back from LRU node, if no response then remove
+                    // LRU node and add the specified node
                     match mh.recv(300, &lru_node.address).await {
                         Ok(GarlemliaMessage::Pong { sender, .. }) if sender.id == lru_node.id => {
                             let mut locked_buckets = self_buckets.lock().await;
@@ -171,6 +184,7 @@ impl RoutingTable {
         });
     }
 
+    /// Add node to routing table
     pub async fn add_node(&mut self, message_handler: Arc<Box<dyn GMessage>>, node: Node, socket: &UdpSocket) {
         if self.local_node.id == node.id {
             return;
@@ -183,6 +197,8 @@ impl RoutingTable {
 
         let mut locked_buckets = self.buckets.lock().await;
         let bucket = locked_buckets.get_mut(&index).unwrap();
+        // Same process as adding from responder, but no new thread needed since this is already
+        // running in its own thread
         if let Some(lru_node) = bucket.nodes.front().cloned() {
             let ping_msg = GarlemliaMessage::Ping {
                 sender: self.local_node.clone(),
@@ -207,6 +223,7 @@ impl RoutingTable {
         }
     }
 
+    /// Find the closest known node to a specified ID
     pub async fn find_closest_nodes(&self, target_id: U256, count: usize) -> Vec<Node> {
         // Always include self
         let mut candidates = vec![self.local_node.clone()];
@@ -263,6 +280,7 @@ impl RoutingTable {
         candidates
     }
 
+    /// Convert routing table to string for displaying debug info
     pub async fn to_string(&self) -> String {
         let mut last: String = "ROUTING TABLE {\n".to_string();
 
@@ -298,6 +316,7 @@ impl RoutingTable {
         last
     }
 
+    /// Generate random ID for each bucket - used when refreshing buckets
     pub fn random_id_for_bucket(self_id: U256, bucket_index: u8) -> U256 {
         // The bit we want to differ at (counting from the left,
         // where 0 = top bit, 255 = bottom bit):

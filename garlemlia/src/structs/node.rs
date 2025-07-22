@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use primitive_types::U256;
 use serde::{Deserialize, Serialize};
 
+/// Node struct
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Node {
     pub id: U256,
