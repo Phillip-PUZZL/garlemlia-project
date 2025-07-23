@@ -6,6 +6,7 @@ use rsa::RsaPublicKey;
 use serde::{Deserialize, Serialize};
 use crate::structs::garlic_message::{CloveMessage, CloveNode};
 
+/// Serializable version of proxy struct for storage in a JSON file
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SerializableProxy {
     sequence_number: U256,
@@ -84,6 +85,7 @@ impl SerializableProxy {
     }
 }
 
+/// Struct holding Proxy peer information
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proxy {
     pub sequence_number: U256,
@@ -91,10 +93,11 @@ pub struct Proxy {
     pub neighbor_2: CloveNode,
     pub neighbor_1_hops: u16,
     pub neighbor_2_hops: u16,
-    pub(crate) public_key: RsaPublicKey,
-    pub(crate) used_last: DateTime<Utc>
+    pub public_key: RsaPublicKey,
+    pub used_last: DateTime<Utc>
 }
 
+/// Serializable version of initiator request struct
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SerializableInitiatorRequest {
     request_id: U256,
@@ -146,15 +149,18 @@ impl SerializableInitiatorRequest {
     }
 }
 
+/// Initiator request struct for holding information about a request coming from an
+/// initiator
 #[derive(Clone, Debug, PartialEq)]
 pub struct InitiatorRequest {
-    pub(crate) request_id: U256,
-    pub(crate) validator_required: bool,
-    pub(crate) proxies: Vec<Proxy>,
-    pub(crate) proxy_id_associations: HashMap<U256, Proxy>,
-    pub(crate) responses: Vec<CloveMessage>
+    pub request_id: U256,
+    pub validator_required: bool,
+    pub proxies: Vec<Proxy>,
+    pub proxy_id_associations: HashMap<U256, Proxy>,
+    pub responses: Vec<CloveMessage>
 }
 
+/// Serializable version of a proxy request
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SerializableProxyRequest {
     sequence_number: U256,
@@ -212,13 +218,14 @@ impl SerializableProxyRequest {
     }
 }
 
+/// Struct containing information about a request to a Proxy
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProxyRequest {
-    pub(crate) sequence_number: U256,
-    pub(crate) request_id: U256,
-    pub(crate) self_proxy_id: Option<U256>,
-    pub(crate) validator_required: bool,
-    pub(crate) initiator: Proxy,
-    pub(crate) sent: DateTime<Utc>,
-    pub(crate) request: CloveMessage
+    pub sequence_number: U256,
+    pub request_id: U256,
+    pub self_proxy_id: Option<U256>,
+    pub validator_required: bool,
+    pub initiator: Proxy,
+    pub sent: DateTime<Utc>,
+    pub request: CloveMessage
 }

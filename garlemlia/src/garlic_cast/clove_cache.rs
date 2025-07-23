@@ -5,6 +5,38 @@ use serde::{Deserialize, Serialize};
 use crate::structs::garlic_message::{Clove, CloveData, CloveNode};
 use crate::structs::node::Node;
 
+/// `SerializableCloveCache` is a serializable and deserializable data structure that serves as a 
+/// comprehensive in-memory cache for storing clove-related data. It leverages various hashmaps 
+/// and sets to maintain relationships between clove IDs, nodes, sequences, timestamps, and 
+/// alternate nodes used in routing or other operations. This structure is derived to support 
+/// common traits like `Clone`, `Debug`, `Serialize`, and `Deserialize`.
+///
+/// Fields:
+/// - `cloves`: A `HashMap` associating a `U256` identifier with `CloveData`. This is the primary 
+///   mapping of clove IDs to their corresponding data.
+/// - `next_hop_key`: A `HashMap` from `u32` keys to `CloveNode`, representing the mapping of a 
+///   key to its next hop node within the clove routing network.
+/// - `next_hop_val`: A `HashMap` from `u32` keys to `Option<CloveNode>`, tracking the next 
+///   possible hop nodes that could exist for a key.
+/// - `alt_nodes_key`: A `HashMap` mapping `u32` keys to `CloveNode`, representing alternative 
+///   nodes associated with specific keys.
+/// - `alt_nodes_val`: A `HashMap` mapping `u32` values to `CloveNode`, representing alternative 
+///   nodes associated with specific values.
+/// - `alt_to_sequence_key`: A `HashMap` mapping `u32` keys to `CloveNode`, representing alternate 
+///   nodes linked to sequence keys.
+/// - `alt_to_sequence_val`: A `HashMap` mapping `u32` keys to `U256` sequence values, associating 
+///   alternate nodes and their corresponding sequences.
+/// - `associations`: A `HashMap` associating a `U256` identifier with a list of `CloveNode`s. This 
+///   maintains various associated nodes for a given clove ID.
+/// - `seen_last`: A `HashMap` associating a `U256` identifier with the last seen timestamp of a 
+///   clove, using the `DateTime<Utc>` type.
+/// - `my_alt_nodes`: A `HashMap` associating a `U256` identifier with `CloveNode`s, representing 
+///   the alternate nodes managed by the current instance.
+/// - `am_alt_for`: A `HashSet` of `U256` identifiers indicating clove IDs for which the current 
+///   instance acts as an alternate.
+///
+/// This structure is ideal for efficiently managing relationships and state in clove-based 
+/// networking or data routing algorithms.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SerializableCloveCache {
     cloves: HashMap<U256, CloveData>,
@@ -103,14 +135,14 @@ impl SerializableCloveCache {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CloveCache {
-    pub(crate) cloves: HashMap<U256, CloveData>,
+    pub cloves: HashMap<U256, CloveData>,
     next_hop: HashMap<CloveNode, Option<CloveNode>>,
     alt_nodes: HashMap<CloveNode, CloveNode>,
-    pub(crate) alt_to_sequence: HashMap<CloveNode, U256>,
+    pub alt_to_sequence: HashMap<CloveNode, U256>,
     associations: HashMap<U256, Vec<CloveNode>>,
     seen_last: HashMap<U256, DateTime<Utc>>,
-    pub(crate) my_alt_nodes: HashMap<U256, CloveNode>,
-    pub(crate) am_alt_for: HashSet<U256>
+    pub my_alt_nodes: HashMap<U256, CloveNode>,
+    pub am_alt_for: HashSet<U256>
 }
 
 impl CloveCache {
@@ -127,6 +159,50 @@ impl CloveCache {
         }
     }
 
+    /// Removes a sequence and all its associated data from the cache.
+    ///
+    /// This function deletes a sequence specified by the input `sequence_number`
+    /// and removes all associated data including nodes linked to the sequence
+    /// and their respective references from corresponding collections.
+    ///
+    /// # Arguments
+    ///
+    /// * `sequence_number` - A `U256` representing the unique identifier of the sequence to be removed.
+    ///
+    /// # Details
+    ///
+    /// - The method searches for the sequence in the `self.associations` collection.
+    /// - If the sequence is found:
+    ///   - It removes the sequence's entry from the `cloves`, `seen_last`, and `my_alt_nodes` collections.
+    ///   - It iterates over all associated nodes, removing each node's entry from the `next_hop`
+    ///     and `alt_nodes` collections.
+    /// - If the sequence is not found, it logs a warning message indicating an unexpected state.
+    ///
+    /// # Behavior
+    ///
+    /// - This function assumes that if a sequence exists in the cache, there should always be associated
+    ///   nodes in the `associations` collection.
+    /// - If this assumption is violated, a warning message is printed for debugging purposes.
+    ///
+    /// # Example
+    ///
+    /// 
+    /// let mut cache = CloveCache::new();
+    /// let sequence_number = U256::from(42);
+    ///
+    /// // Add sequence and related data to the cache (assume this step happens elsewhere)
+    /// cache.remove_sequence(sequence_number); // Removes the sequence and its associated nodes
+    /// 
+    ///
+    /// # Panics
+    ///
+    /// None explicitly. However, unexpected state may occur if the clove cache has inconsistent data,
+    /// leading to the warning message being printed indicating that the sequence does not have associated nodes.
+    ///
+    /// # Note
+    ///
+    /// Ensure that the sequence and its associated nodes are valid and properly managed to maintain the integrity
+    /// of the cache.
     pub fn remove_sequence(&mut self, sequence_number: U256) {
         let associated = self.associations.remove(&sequence_number);
 

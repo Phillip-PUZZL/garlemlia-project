@@ -10,10 +10,15 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex};
 use tokio::{fs, task};
+use tokio::time::sleep;
+
+use garlic_cast::{GarlicCast};
 
 use crate::garlic_cast::garlic_cast;
-use garlic_cast::{GarlicCast};
-use tokio::time::sleep;
+use crate::garlic_cast::garlic_cast::message_handling::MessageHandling;
+use crate::garlic_cast::garlic_cast::proxy_request::ProxyRequest;
+use crate::garlic_cast::garlic_cast::file_operations::FileOperations;
+use crate::garlic_cast::garlic_cast::response_handling::ResponseHandling;
 use crate::file_utils::garlemlia_files::FileStorage;
 use crate::structs::constants::{DEFAULT_K, LOOKUP_ALPHA, SOCKET_DATA_MAX};
 use crate::structs::file_chunks::{ChunkPartAssociations, ProcessingCheck, ProxyChunkPartInfo, ProxyFileChunkInfo};

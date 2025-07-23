@@ -22,6 +22,12 @@ pub struct Clove {
 }
 
 impl Clove {
+    pub fn default() -> Clove {
+        todo!()
+    }
+}
+
+impl Clove {
     pub fn update_sequence(&mut self, new_sequence_number: U256) -> Clove {
         self.sequence_number = new_sequence_number;
         self.clone()

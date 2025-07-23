@@ -131,7 +131,7 @@ async fn test_add_node_ping() {
         println!("Routing Table After Guaranteed LRU Removal: {:?}", rt.buckets().await.get(&bucket_index).unwrap());
     }
 
-    // Ensure that the original bucket has new node
+    // Ensure that the original bucket has a new node
     assert_eq!(new.nodes[DEFAULT_K - 1], overflow_node, "Bucket should have new LRU");
     {
         let rt = kad.routing_table.lock().await;
