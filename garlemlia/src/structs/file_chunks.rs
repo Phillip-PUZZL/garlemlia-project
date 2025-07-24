@@ -1,6 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 use primitive_types::U256;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 /// State information for shared memory processing
 #[derive(Debug, Clone)]
@@ -26,6 +29,18 @@ impl ProcessingCheck {
     pub fn set(&mut self, state: bool) {
         self.is_processing = state;
     }
+
+    pub async fn wait_and_acquire(check: &Arc<Mutex<ProcessingCheck>>) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let mut guard = check.lock().await;
+            if !guard.check() {
+                guard.set(true);
+                break;
+            }
+        }
+    }
+
 }
 
 /// Struct to hold information on chunk parts

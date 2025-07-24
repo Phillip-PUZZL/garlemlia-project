@@ -18,10 +18,21 @@ they would not know what data they are uploading. Finally, the implementation of
 inspired relocation scheme for file metadata and decryption key information makes it even
 more difficult and confusing to determine what a user is downloading.
 
-Planned Major Changes:
+Planned Changes:
 
 - [ ] Source Code Cleanup
-- [ ] Full Project Comments and Documentation
+  - [X] Initial code refactor
+  - [ ] Use Arc\<RwLock\> in on shared resources that are read more often than written
+  - [ ] Implement #[derive(Default)] where we can
+  - [ ] Move Errors over to the thiserror crate
+  - [ ] More consistent usage of async-trait
+  - [ ] Use Builder Pattern on some structs
+  - [ ] Type Aliasing improvements
+  - [ ] Explore usage of parking_lot Mutex Locks (purportedly more efficient)
+  - [ ] Better / more trait implementation
+  - [ ] Utilize config crate and utilize a config file
+  - [ ] More documentation
+- [X] Project Comments
 - [ ] Eclipse Attack Prevention
 - [ ] Node Bandwidth Monitoring
 - [ ] DoS Attack Prevention
