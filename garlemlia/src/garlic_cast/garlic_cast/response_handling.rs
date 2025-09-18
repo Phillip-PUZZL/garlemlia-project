@@ -10,45 +10,6 @@ pub(crate) trait ResponseHandling {
     fn get_download_responses(&self) -> HashMap<U256, Vec<GarlemliaResponse>>;
     fn get_file_info_responses(&self) -> HashMap<U256, Vec<GarlemliaResponse>>;
     fn get_search_responses(&self) -> Vec<FileInfo>;
-    /// Handles the event when a file chunk is downloaded by a peer node.
-    ///
-    /// This method is triggered when a file chunk has been successfully downloaded. It updates the corresponding
-    /// request metadata by appending the response data (including details about the downloaded chunk) to the
-    /// list of responses maintained for the request.
-    ///
-    /// # Parameters
-    /// - `request_id`: A `U256` identifier representing the unique ID of the download request.
-    /// - `chunk_id`: A `U256` identifier representing the unique ID of the downloaded file chunk.
-    /// - `sender`: A `Node` object representing the peer node that downloaded the file chunk.
-    ///
-    /// # Behavior
-    /// - Attempts to retrieve the metadata for the file download request matching `request_id` by accessing
-    ///   the `requests_as_initiator` map.
-    /// - If the request metadata is found:
-    ///   - Appends a `CloveMessage::Response` containing a `GarlemliaResponse::FileChunkInfo` to the request's
-    ///     response list. This encapsulates metadata such as the `request_id`, `chunk_id`, and sender information.
-    /// - If the request metadata is not found, the function will silently do nothing (no error handling implemented).
-    ///
-    /// # Notes
-    /// - The `chunk_size` and `parts_count` fields in the `GarlemliaResponse::FileChunkInfo` are currently set to `0`.
-    ///   Ensure to update these values if accurate chunk metadata needs to be provided.
-    /// - This function assumes the presence of prior initialization of the `requests_as_initiator` map and its entries.
-    ///
-    /// # Example (Pseudo-scenario)
-    ///
-    /// let mut download_handler = FileDownloadHandler::new();
-    /// let request_id = U256::from(1);
-    /// let chunk_id = U256::from(10);
-    /// let sender_node = Node::new(...);
-    ///
-    /// download_handler.file_chunk_downloaded(request_id, chunk_id, sender_node).await;
-    ///
-    /// // Internally updates the request metadata for `request_id`
-    /// // Adds a response detailing the downloaded chunk.
-    ///
-    /// # Potential Enhancements
-    /// - Add error handling/logging if `request_id` is not found in the `requests_as_initiator` map.
-    /// - Populate the `chunk_size` and `parts_count` fields with appropriate chunk-specific information.
     async fn file_chunk_downloaded(&mut self, request_id: U256, chunk_id: U256, sender: Node);
 }
 

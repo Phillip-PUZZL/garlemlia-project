@@ -4,14 +4,12 @@ Despite the lack of some comfort features, Garlemlia has proven to be an effecti
 implementation of an anonymous and private P2P file sharing system. Garlemlia provides
 anonymity and privacy through its utilization of Garlic Cast and its data ignorance design.
 More than this, though, it has lower cryptographic overhead than I2P due to its utilization
-of a hybrid encryption scheme and also provides on-network file indexing. Garlemlia re-
-duces the amount of necessary third-party software and components to zero.<br>
+of a hybrid encryption scheme and also provides on-network file indexing. Garlemlia reduces the amount of necessary third-party software and components to zero.<br>
 
 This implementation leverages a number of technologies which allow it to not only
-function, but to perform quite well. Utilizing Kademlia as the foundational DHT of the
+function, but to perform quite well. Using Kademlia as the foundational DHT of the
 system ensures efficient network routing. Garlic Cast by itself provides an immense boost
-to the overall network anonymity and privacy. The modifications we made to our imple-
-mentation of Garlic Cast, though, ensure that it is more resistant to network churn and
+to the overall network anonymity and privacy. The modifications we made to our implementation of Garlic Cast, though, ensure that it is more resistant to network churn and
 mitigates MITM attacks. The implementation of data ignorance as the backbone for our
 network file system ensures that even if a node knew to whom they were uploading data,
 they would not know what data they are uploading. Finally, the implementation of a TOTP
@@ -22,16 +20,13 @@ Planned Changes:
 
 - [ ] Source Code Cleanup
   - [X] Initial code refactor
-  - [ ] Use Arc\<RwLock\> in on shared resources that are read more often than written
-  - [ ] Implement #[derive(Default)] where we can
-  - [ ] Move Errors over to the thiserror crate
   - [ ] More consistent usage of async-trait
   - [ ] Use Builder Pattern on some structs
   - [ ] Type Aliasing improvements
-  - [ ] Explore usage of parking_lot Mutex Locks (purportedly more efficient)
   - [ ] Better / more trait implementation
   - [ ] Utilize config crate and utilize a config file
   - [ ] More documentation
+- [ ] Simulator
 - [X] Project Comments
 - [ ] Eclipse Attack Prevention
 - [ ] Node Bandwidth Monitoring
