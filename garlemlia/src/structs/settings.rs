@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub fn new_settings_file(settings_directory: Option<String>, files_directory: Option<String>) -> Result<Settings, Box<dyn std::error::Error>> {
     let settings_dir = format!("{}/settings.config", settings_directory.unwrap_or(env::current_dir().unwrap().to_str().unwrap().to_string())).to_string();
-    let files_dir = files_directory.unwrap_or(env::current_dir().unwrap().to_str().unwrap().to_string());
+    let files_dir = files_directory.unwrap_or(format!("{}/garlemlia-files", env::current_dir().unwrap().to_str().unwrap()).to_string());
 
     let files_dir_path = Path::new(&files_dir);
 
