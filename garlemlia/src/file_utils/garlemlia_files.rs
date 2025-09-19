@@ -328,8 +328,9 @@ impl FileInfo {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileStorage {
+    pub file_storage_root_path: String,
     pub file_storage_settings_path: String,
     pub downloads_path: String,
     pub chunk_data_path: String,
@@ -338,8 +339,9 @@ pub struct FileStorage {
 }
 
 impl FileStorage {
-    pub fn new(file_storage_settings_path: String, downloads_path: String, chunk_data_path: String, temp_chunk_data_path: String) -> FileStorage {
+    pub fn new(file_storage_root_path: String, file_storage_settings_path: String, downloads_path: String, chunk_data_path: String, temp_chunk_data_path: String) -> FileStorage {
         FileStorage {
+            file_storage_root_path,
             file_storage_settings_path,
             downloads_path,
             chunk_data_path,
@@ -460,11 +462,45 @@ impl FileStorage {
         Ok(file_keys)
     }
 
+    // TODO: Remove this function and migrate over to the version in structs/garlemlia_data.rs
     pub async fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let json_string = serde_json::to_string_pretty(self)?;
         let mut file = File::create(self.file_storage_settings_path.clone()).await?;
         file.write_all(json_string.as_bytes()).await?;
         Ok(())
+    }
+
+    pub fn add_download(&mut self, download: FileInfo) {
+        let _ = &self.downloads.push(download);
+    }
+
+    pub fn get_download(&self, id: U256) -> Option<FileInfo> {
+        for item in &self.downloads {
+            if item.file_id.unwrap() == id {
+                return Some(item.clone());
+            }
+        }
+
+        None
+    }
+
+    pub fn get_download_mut(&mut self, id: U256) -> Option<&mut FileInfo> {
+        for item in &mut self.downloads {
+            if item.file_id.unwrap() == id {
+                return Some(item);
+            }
+        }
+
+        None
+    }
+
+    pub fn remove_download(&mut self, id: U256) {
+        for i in 0..self.downloads.len() {
+            if self.downloads[i].file_id.unwrap() == id {
+                self.downloads.remove(i);
+                return;
+            }
+        }
     }
 }
 

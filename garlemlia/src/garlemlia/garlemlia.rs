@@ -16,9 +16,10 @@ use crate::garlic_cast::garlic_cast;
 use crate::file_utils::garlemlia_files::FileStorage;
 use crate::structs::constants::{SOCKET_DATA_MAX};
 use crate::structs::file_chunks::{ChunkPartAssociations, ProcessingCheck};
-use crate::structs::garlemlia_message::{GMessage, GarlemliaData, GarlemliaMessage, MessageChannel};
+use crate::structs::garlemlia_message::{GMessage, GarlemliaMessage, MessageChannel};
 use crate::structs::node::Node;
 use crate::structs::routing_table::RoutingTable;
+use crate::structs::garlemlia_data::GarlemliaData;
 
 mod functions;
 mod find;
@@ -60,7 +61,7 @@ impl Garlemlia {
         fs::create_dir_all(dir_id.clone()).await.unwrap();
 
         let root_dir = format!("{}/{}", file_storage_path.to_str().unwrap(), id);
-        let file_storage = FileStorage::new(format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
+        let file_storage = FileStorage::new(root_dir.clone(), format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
 
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
         let socket = Arc::new(UdpSocket::bind(format!("{}:{}", address, port)).await.unwrap());
@@ -100,7 +101,7 @@ impl Garlemlia {
         fs::create_dir_all(dir_id.clone()).await.unwrap();
 
         let root_dir = format!("{}/{}", file_storage_path.to_str().unwrap(), id);
-        let file_storage = FileStorage::new(format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
+        let file_storage = FileStorage::new(root_dir.clone(), format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
 
         let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
 

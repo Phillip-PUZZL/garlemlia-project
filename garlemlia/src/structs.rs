@@ -7,3 +7,4 @@ pub mod garlemlia_message;
 pub mod garlic_message;
 pub mod file_chunks;
 pub mod settings;
+pub mod garlemlia_data;

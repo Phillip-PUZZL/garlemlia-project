@@ -5,7 +5,7 @@ use std::{env, fs};
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub fn new_settings_file(settings_directory: Option<String>, files_directory: Option<String>) -> Result<Settings, Box<dyn std::error::Error>> {
+pub fn new_settings(settings_directory: Option<String>, files_directory: Option<String>) -> Result<Settings, Box<dyn std::error::Error>> {
     let settings_dir = format!("{}/settings.config", settings_directory.unwrap_or(env::current_dir().unwrap().to_str().unwrap().to_string())).to_string();
     let files_dir = files_directory.unwrap_or(format!("{}/garlemlia-files", env::current_dir().unwrap().to_str().unwrap()).to_string());
 
@@ -19,6 +19,7 @@ pub fn new_settings_file(settings_directory: Option<String>, files_directory: Op
     }
 
     let application_settings = ApplicationSettings {
+        root_storage_path: files_dir.to_string(),
         temporary_storage_path: format!("{}/temporary", &files_dir).to_string(),
         download_file_storage_path: format!("{}/downloads", &files_dir).to_string(),
         upload_file_storage_path: format!("{}/uploads", &files_dir).to_string()
@@ -130,18 +131,24 @@ impl Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApplicationSettings {
+    root_storage_path: String,
     temporary_storage_path: String,
     download_file_storage_path: String,
     upload_file_storage_path: String
 }
 
 impl ApplicationSettings {
-    pub fn new(temporary_storage_path: String, download_file_storage_path: String, upload_file_storage_path: String) -> Self {
+    pub fn new(root_storage_path: String, temporary_storage_path: String, download_file_storage_path: String, upload_file_storage_path: String) -> Self {
         Self {
+            root_storage_path,
             temporary_storage_path,
             download_file_storage_path,
             upload_file_storage_path
         }
+    }
+
+    pub fn set_root_storage_path(&mut self, root_storage_path: String) {
+        self.root_storage_path = root_storage_path;
     }
 
     pub fn set_temporary_storage_path(&mut self, temporary_storage_path: String) {
@@ -154,6 +161,10 @@ impl ApplicationSettings {
 
     pub fn set_upload_file_storage_path(&mut self, upload_file_storage_path: String) {
         self.upload_file_storage_path = upload_file_storage_path;
+    }
+
+    pub fn get_root_storage_path(&self) -> String {
+        self.root_storage_path.clone()
     }
 
     pub fn get_temporary_storage_path(&self) -> String {
