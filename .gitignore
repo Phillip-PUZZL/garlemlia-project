@@ -2,4 +2,6 @@
 /running_nodes_files
 /simulated_nodes_files
 test_file_methods
+/garlemlia-files
+settings.config
 *Cargo.lock

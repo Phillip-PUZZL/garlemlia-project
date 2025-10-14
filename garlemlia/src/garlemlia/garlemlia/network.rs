@@ -12,7 +12,7 @@ impl Garlemlia {
         let self_node = self.get_node().await;
         if node.id != self_node.id {
             let message_handler = Arc::clone(&self.message_handler);
-            self.routing_table.lock().await.add_node(message_handler, node, socket).await;
+            self.routing_table.lock().await.add_node(&message_handler, node, socket).await;
         }
     }
 
@@ -31,7 +31,7 @@ impl Garlemlia {
     }
 
     /// Initial function to join the network and perform a bucket refresh
-    pub async fn join_network(&mut self, socket: Arc<UdpSocket>, target: &SocketAddr) {
+    pub async fn join_network(&mut self, socket: Arc<UdpSocket>, initial_target: &Option<SocketAddr>) {
         let self_node = self.get_node().await;
         let socket_clone = Arc::clone(&socket);
         let message = GarlemliaMessage::FindNode {
@@ -39,37 +39,51 @@ impl Garlemlia {
             sender: self_node.clone(),
         };
 
-        {
-            if let Err(e) = self.message_handler.send(&socket, self_node.clone(), &target, &message).await {
-                eprintln!("Failed to send FindNode to {}: {:?}", target, e);
+        let mut potential_nodes = self.routing_table.lock().await.flat_nodes().await;
+
+        let mut potential_targets = vec![];
+        for node in potential_nodes {
+            potential_targets.push(node.address);
+        }
+
+        if initial_target.is_some() {
+            potential_targets.push(initial_target.unwrap());
+        }
+
+        for target in potential_targets {
+            {
+                if let Err(e) = self.message_handler.send(&socket, self_node.clone(), &target, &message).await {
+                    eprintln!("Failed to send FindNode to {}: {:?}", target, e);
+                }
             }
-        }
 
-        let response;
-        {
-            response = self.message_handler.recv(200, &target).await;
-        }
+            let response;
+            {
+                response = self.message_handler.recv(200, &target).await;
+            }
 
-        // Check if bootstrap node exists
-        if response.is_ok() {
-            match response.unwrap() {
-                GarlemliaMessage::Response { nodes, .. } => {
-                    for node in nodes {
-                        if node.id != self_node.id {
-                            // Add this node to the routing table
-                            self.routing_table.lock().await.add_node(Arc::clone(&self.message_handler), node, &*socket_clone.clone()).await;
+            // Check if bootstrap node exists
+            if response.is_ok() {
+                match response.unwrap() {
+                    GarlemliaMessage::Response { nodes, .. } => {
+                        for node in nodes {
+                            if node.id != self_node.id {
+                                // Add this node to the routing table
+                                self.routing_table.lock().await.add_node(&Arc::clone(&self.message_handler), node, &*socket_clone.clone()).await;
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
-            }
 
-            // Search for self to provide initial routing table information
-            self.iterative_find_node(socket_clone.clone(), self_node.id).await;
-            // Refresh buckets to provide better filled buckets
-            self.refresh_buckets(socket_clone).await;
-        } else {
-            println!("FAILED TO JOIN NETWORK");
+                // Search for self to provide initial routing table information
+                self.iterative_find_node(socket_clone.clone(), self_node.id).await;
+                // Refresh buckets to provide better filled buckets
+                self.refresh_buckets(socket_clone).await;
+                break;
+            } else {
+                println!("NODE AT {target} FAILED, TRYING NEXT NODE");
+            }
         }
     }
 
@@ -98,7 +112,7 @@ impl Garlemlia {
                 GarlemliaMessage::Response { nodes, .. } => {
                     for node in nodes {
                         if node.id != self_node.id {
-                            self.routing_table.lock().await.add_node(Arc::clone(&self.message_handler), node, &*socket_clone.clone()).await;
+                            self.routing_table.lock().await.add_node(&Arc::clone(&self.message_handler), node, &*socket_clone.clone()).await;
                         }
                     }
                 }

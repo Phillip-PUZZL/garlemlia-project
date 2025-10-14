@@ -11,7 +11,11 @@ use crate::structs::node::Node;
 use crate::time_hash::time_based_hash::RotatingHash;
 
 pub async fn new_tracker(file_storage_path: String) -> Result<GarlemliaFilesTracker, Box<dyn std::error::Error>> {
-    let file_storage = FileStorage::new(file_storage_path.clone(), format!("{}/file_storage.json", file_storage_path), format!("{}/downloads", file_storage_path), format!("{}/uploads", file_storage_path), format!("{}/temporary", file_storage_path));
+    let file_storage = FileStorage::new(file_storage_path.clone(),
+                                        format!("{}/file_storage.json", file_storage_path),
+                                        format!("{}/downloads", file_storage_path),
+                                        format!("{}/uploads", file_storage_path),
+                                        format!("{}/temporary", file_storage_path));
 
 
     let tracker = GarlemliaFilesTracker::new(None, file_storage);
@@ -84,8 +88,10 @@ impl GarlemliaFilesTracker {
 pub enum GarlemliaData {
     Value { id: U256, value: String },
     Validator { id: U256, proxy_ids: Vec<U256>, proxies: HashMap<U256, SocketAddr> },
-    FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: RotatingHash, key_location: RotatingHash },
-    MetaData { id: U256, file_id: U256, chunk_info: Vec<InitialChunkInfo>, downloads: usize, availability: f64, metadata_location: RotatingHash },
+    FileName { id: U256, name: String, file_type: String, size: usize, categories: Vec<String>,
+        metadata_location: RotatingHash, key_location: RotatingHash },
+    MetaData { id: U256, file_id: U256, chunk_info: Vec<InitialChunkInfo>, downloads: usize,
+        availability: f64, metadata_location: RotatingHash },
     FileKey { id: U256, enc_file_id: U256, decryption_key: String, key_location: RotatingHash },
     FileChunk { id: U256, size: usize }
 }
@@ -106,7 +112,15 @@ impl GarlemliaData {
     /// Function to transpose the information given to a form in which it is more easily stored
     pub fn store(&mut self) {
         match self {
-            GarlemliaData::FileName { id, name, file_type, size, categories, metadata_location, key_location } => {
+            GarlemliaData::FileName {
+                id,
+                name,
+                file_type,
+                size,
+                categories,
+                metadata_location,
+                key_location
+            } => {
                 let mut m_loc = metadata_location.clone();
                 m_loc.store();
 
@@ -123,7 +137,14 @@ impl GarlemliaData {
                     key_location: k_loc
                 };
             }
-            GarlemliaData::MetaData { id, file_id, chunk_info, downloads, availability, metadata_location } => {
+            GarlemliaData::MetaData {
+                id,
+                file_id,
+                chunk_info,
+                downloads,
+                availability,
+                metadata_location
+            } => {
                 let mut m_loc = metadata_location.clone();
                 m_loc.store();
 
@@ -187,7 +208,15 @@ impl GarlemliaData {
 
                 Some(res)
             }
-            GarlemliaData::FileName { name, file_type, size, categories, metadata_location, key_location, .. } => {
+            GarlemliaData::FileName {
+                name,
+                file_type,
+                size,
+                categories,
+                metadata_location,
+                key_location,
+                ..
+            } => {
                 Some(GarlemliaResponse::FileName {
                     name: name.clone(),
                     file_type: file_type.clone(),

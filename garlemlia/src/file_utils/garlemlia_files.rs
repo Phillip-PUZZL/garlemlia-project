@@ -52,7 +52,8 @@ impl FileInfo {
         }
     }
     
-    pub fn from(name: String, file_type: String, size: usize, categories: Vec<String>, metadata_location: Vec<HashLocation>, key_location: Vec<HashLocation>) -> FileInfo {
+    pub fn from(name: String, file_type: String, size: usize, categories: Vec<String>,
+                metadata_location: Vec<HashLocation>, key_location: Vec<HashLocation>) -> FileInfo {
         FileInfo {
             request_id: u256_random(),
             name,
@@ -318,11 +319,13 @@ impl FileInfo {
     }
 
     pub fn to_string(&self) -> String {
-        let mut output = format!("{{\n\tName: {}\n\tType: {}\n\tSize: {}\n\tDownloaded: {}\n\tCategories: [\n", self.name, self.file_type, self.size, self.downloaded);
+        let mut output = format!("{{\n\tName: {}\n\tType: {}\n\tSize: {}\n\tDownloaded: {}\n\tCategories: [\n",
+                                 self.name, self.file_type, self.size, self.downloaded);
         for item in self.categories.clone() {
             output.push_str(format!("\t\t{}", item).as_str());
         }
-        output.push_str(format!("\t]\n\tChunks Downloaded: {}\n\tChunks Needed: {}\n}}", self.downloaded_chunks.len(), self.needed_chunks.len()).as_str());
+        output.push_str(format!("\t]\n\tChunks Downloaded: {}\n\tChunks Needed: {}\n}}",
+                                self.downloaded_chunks.len(), self.needed_chunks.len()).as_str());
 
         output
     }
@@ -335,18 +338,20 @@ pub struct FileStorage {
     pub downloads_path: String,
     pub chunk_data_path: String,
     pub temp_chunk_data_path: String,
-    downloads: Vec<FileInfo>
+    files: Vec<FileInfo>
 }
 
 impl FileStorage {
-    pub fn new(file_storage_root_path: String, file_storage_settings_path: String, downloads_path: String, chunk_data_path: String, temp_chunk_data_path: String) -> FileStorage {
+    pub fn new(file_storage_root_path: String, file_storage_settings_path: String,
+               downloads_path: String, chunk_data_path: String,
+               temp_chunk_data_path: String) -> FileStorage {
         FileStorage {
             file_storage_root_path,
             file_storage_settings_path,
             downloads_path,
             chunk_data_path,
             temp_chunk_data_path,
-            downloads: Vec::new()
+            files: Vec::new()
         }
     }
 
@@ -471,11 +476,11 @@ impl FileStorage {
     }
 
     pub fn add_download(&mut self, download: FileInfo) {
-        let _ = &self.downloads.push(download);
+        let _ = &self.files.push(download);
     }
 
     pub fn get_download(&self, id: U256) -> Option<FileInfo> {
-        for item in &self.downloads {
+        for item in &self.files {
             if item.file_id.unwrap() == id {
                 return Some(item.clone());
             }
@@ -485,7 +490,7 @@ impl FileStorage {
     }
 
     pub fn get_download_mut(&mut self, id: U256) -> Option<&mut FileInfo> {
-        for item in &mut self.downloads {
+        for item in &mut self.files {
             if item.file_id.unwrap() == id {
                 return Some(item);
             }
@@ -495,9 +500,9 @@ impl FileStorage {
     }
 
     pub fn remove_download(&mut self, id: U256) {
-        for i in 0..self.downloads.len() {
-            if self.downloads[i].file_id.unwrap() == id {
-                self.downloads.remove(i);
+        for i in 0..self.files.len() {
+            if self.files[i].file_id.unwrap() == id {
+                self.files.remove(i);
                 return;
             }
         }

@@ -6,7 +6,8 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub fn new_settings(settings_directory: Option<String>, files_directory: Option<String>) -> Result<Settings, Box<dyn std::error::Error>> {
-    let settings_dir = format!("{}/settings.config", settings_directory.unwrap_or(env::current_dir().unwrap().to_str().unwrap().to_string())).to_string();
+    let settings_dir = format!("{}/settings.config",
+                               settings_directory.unwrap_or(env::current_dir().unwrap().to_str().unwrap().to_string())).to_string();
     let files_dir = files_directory.unwrap_or(format!("{}/garlemlia-files", env::current_dir().unwrap().to_str().unwrap()).to_string());
 
     let files_dir_path = Path::new(&files_dir);
@@ -20,6 +21,7 @@ pub fn new_settings(settings_directory: Option<String>, files_directory: Option<
 
     let application_settings = ApplicationSettings {
         root_storage_path: files_dir.to_string(),
+        tracker_file_path: format!("{}/tracker.data", &files_dir).to_string(),
         temporary_storage_path: format!("{}/temporary", &files_dir).to_string(),
         download_file_storage_path: format!("{}/downloads", &files_dir).to_string(),
         upload_file_storage_path: format!("{}/uploads", &files_dir).to_string()
@@ -67,7 +69,8 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn new(settings_path: String, application_settings: ApplicationSettings, network_settings: NetworkSettings, node_settings: NodeSettings) -> Self {
+    pub fn new(settings_path: String, application_settings: ApplicationSettings,
+               network_settings: NetworkSettings, node_settings: NodeSettings) -> Self {
         Self {
             settings_path,
             application_settings,
@@ -132,15 +135,18 @@ impl Settings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApplicationSettings {
     root_storage_path: String,
+    tracker_file_path: String,
     temporary_storage_path: String,
     download_file_storage_path: String,
     upload_file_storage_path: String
 }
 
 impl ApplicationSettings {
-    pub fn new(root_storage_path: String, temporary_storage_path: String, download_file_storage_path: String, upload_file_storage_path: String) -> Self {
+    pub fn new(root_storage_path: String, tracker_file_path: String, temporary_storage_path: String,
+               download_file_storage_path: String, upload_file_storage_path: String) -> Self {
         Self {
             root_storage_path,
+            tracker_file_path,
             temporary_storage_path,
             download_file_storage_path,
             upload_file_storage_path
@@ -149,6 +155,10 @@ impl ApplicationSettings {
 
     pub fn set_root_storage_path(&mut self, root_storage_path: String) {
         self.root_storage_path = root_storage_path;
+    }
+
+    pub fn set_tracker_file_path(&mut self, tracker_file_path: String) {
+        self.tracker_file_path = tracker_file_path;
     }
 
     pub fn set_temporary_storage_path(&mut self, temporary_storage_path: String) {
@@ -165,6 +175,10 @@ impl ApplicationSettings {
 
     pub fn get_root_storage_path(&self) -> String {
         self.root_storage_path.clone()
+    }
+
+    pub fn get_tracker_file_path(&self) -> String {
+        self.tracker_file_path.clone()
     }
 
     pub fn get_temporary_storage_path(&self) -> String {
@@ -226,6 +240,10 @@ impl NetworkSettings {
 
     pub fn get_incoming_port(&self) -> u16 {
         self.incoming_port.unwrap_or(0)
+    }
+
+    pub fn get_known_nodes(&self) -> Vec<Node> {
+        self.known_nodes.clone()
     }
 
     pub fn get_outgoing_ports(&self) -> Vec<u16> {

@@ -16,23 +16,6 @@ they would not know what data they are uploading. Finally, the implementation of
 inspired relocation scheme for file metadata and decryption key information makes it even
 more difficult and confusing to determine what a user is downloading.
 
-Planned Changes:
-
-- [ ] Source Code Cleanup
-  - [X] Initial code refactor
-  - [ ] More consistent usage of async-trait
-  - [ ] Use Builder Pattern on some structs
-  - [ ] Type Aliasing improvements
-  - [ ] Better / more trait implementation
-  - [ ] Utilize config crate and utilize a config file
-  - [ ] More documentation
-- [ ] Simulator
-- [X] Project Comments
-- [ ] Eclipse Attack Prevention
-- [ ] Node Bandwidth Monitoring
-- [ ] DoS Attack Prevention
-- [ ] Forced Node ID Rotation (File Honeypot Prevention)
-
 Planned Features:
 
 - [ ] TCP Socket Utilization for File Transfers<br>

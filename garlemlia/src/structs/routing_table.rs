@@ -185,7 +185,7 @@ impl RoutingTable {
     }
 
     /// Add node to routing table
-    pub async fn add_node(&mut self, message_handler: Arc<Box<dyn GMessage>>, node: Node, socket: &UdpSocket) {
+    pub async fn add_node(&mut self, message_handler: &Arc<Box<dyn GMessage>>, node: Node, socket: &UdpSocket) {
         if self.local_node.id == node.id {
             return;
         }

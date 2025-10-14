@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use primitive_types::U256;
 use rand_core::OsRng;
 use rsa::{RsaPrivateKey, RsaPublicKey};
+use rsa::pkcs1::DecodeRsaPublicKey;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex};
 use tokio::{fs, task};
@@ -16,10 +17,10 @@ use crate::garlic_cast::garlic_cast;
 use crate::file_utils::garlemlia_files::FileStorage;
 use crate::structs::constants::{SOCKET_DATA_MAX};
 use crate::structs::file_chunks::{ChunkPartAssociations, ProcessingCheck};
-use crate::structs::garlemlia_message::{GMessage, GarlemliaMessage, MessageChannel};
+use crate::structs::garlemlia_message::{GMessage, GarlemliaMessage, GarlemliaMessageHandler, MessageChannel};
 use crate::structs::node::Node;
 use crate::structs::routing_table::RoutingTable;
-use crate::structs::garlemlia_data::GarlemliaData;
+use crate::structs::garlemlia_data::{load_tracker_file, new_tracker, GarlemliaData};
 
 mod functions;
 mod find;
@@ -27,6 +28,10 @@ mod network;
 mod store;
 
 pub use functions::GarlemliaFunctions;
+use rsa::pkcs1::DecodeRsaPrivateKey;
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+use crate::helper_functions::helper_functions::u256_random;
+use crate::structs::settings::{load_settings_file, new_settings};
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -47,40 +52,48 @@ pub struct Garlemlia {
 
 // TODO: Implement new event thread for watching last_seen information and pinging nodes
 // TODO: which have not been seen in an hour + evicting those which fail
-// TODO: Add RPC ID's to messages?
 impl Garlemlia {
-    pub async fn new(id: U256, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, file_storage_path: Box<&Path>) -> Self {
-        let mut dir_id = file_storage_path.join(id.to_string());
-        dir_id.push("downloads");
-        fs::create_dir_all(dir_id.clone()).await.unwrap();
-        dir_id.pop();
-        dir_id.push("chunks");
-        fs::create_dir_all(dir_id.clone()).await.unwrap();
-        dir_id.pop();
-        dir_id.push("temp_chunks");
-        fs::create_dir_all(dir_id.clone()).await.unwrap();
+    pub async fn new(settings_dir: Option<String>, files_dir: Option<String>, recv_port: Option<u16>) -> Self {
+        let mut settings = new_settings(settings_dir, files_dir).unwrap();
+        settings.save_settings().await.unwrap();
 
-        let root_dir = format!("{}/{}", file_storage_path.to_str().unwrap(), id);
-        let file_storage = FileStorage::new(root_dir.clone(), format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
+        if recv_port.is_some() {
+            settings.get_network_settings_mut().set_incoming_port(recv_port);
+        }
 
-        let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
-        let socket = Arc::new(UdpSocket::bind(format!("{}:{}", address, port)).await.unwrap());
+        let tracker = new_tracker(settings.get_application_settings().get_root_storage_path()).await.unwrap();
+        tracker.save_tracker().await.unwrap();
+
+        let port = settings.get_network_settings().get_incoming_port();
+
+        let node = Node { id: u256_random(), address: format!("0.0.0.0:{port}").parse().unwrap() };
+        let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{port}")).await.unwrap());
 
         let mut rng = OsRng;
         let bits = 2048;
         let private_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
         let public_key = RsaPublicKey::from(&private_key);
 
-        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(), Arc::new(msg_handler.clone()), vec![], Some(public_key), Some(private_key));
+        settings.get_node_settings_mut().set_private_key(Some(private_key.to_pkcs8_pem(LineEnding::LF).unwrap().to_string()));
+        settings.get_node_settings_mut().set_public_key(Some(public_key.to_public_key_pem(LineEnding::LF).unwrap().to_string()));
+        settings.save_settings().await.unwrap();
+
+        let msg_handler = GarlemliaMessageHandler::create(10);
+
+        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(),
+                                     Arc::new(msg_handler.clone()), vec![],
+                                     Some(public_key), Some(private_key));
+
+        let rt = RoutingTable::new(node.clone());
 
         Self {
             node: Arc::new(Mutex::new(node)),
             socket,
-            receive_addr: format!("{address}:{port}").parse().unwrap(),
+            receive_addr: format!("0.0.0.0:{port}").parse().unwrap(),
             message_handler: Arc::new(msg_handler),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
-            file_storage: Arc::new(Mutex::new(file_storage)),
+            file_storage: Arc::new(Mutex::new(tracker.get_downloads().clone())),
             garlic: Arc::new(Mutex::new(garlic)),
             chunk_part_associations: Arc::new(Mutex::new(ChunkPartAssociations::new())),
             is_processing: Arc::new(Mutex::new(ProcessingCheck::new(false))),
@@ -89,34 +102,38 @@ impl Garlemlia {
         }
     }
 
-    pub async fn new_with_details(id: U256, address: &str, port: u16, rt: RoutingTable, msg_handler: Box<dyn GMessage>, socket: Arc<UdpSocket>, public_key: RsaPublicKey, private_key: RsaPrivateKey, file_storage_path: Box<&Path>) -> Self {
-        let mut dir_id = file_storage_path.join(id.to_string());
-        dir_id.push("downloads");
-        fs::create_dir_all(dir_id.clone()).await.unwrap();
-        dir_id.pop();
-        dir_id.push("chunks");
-        fs::create_dir_all(dir_id.clone()).await.unwrap();
-        dir_id.pop();
-        dir_id.push("temp_chunks");
-        fs::create_dir_all(dir_id.clone()).await.unwrap();
+    pub async fn load(settings_path: String) -> Self {
+        let mut settings = load_settings_file(settings_path).await.unwrap();
 
-        let root_dir = format!("{}/{}", file_storage_path.to_str().unwrap(), id);
-        let file_storage = FileStorage::new(root_dir.clone(), format!("{}/file_storage.json", root_dir), format!("{}/downloads", root_dir), format!("{}/chunks", root_dir), format!("{}/temp_chunks", root_dir));
+        let tracker = load_tracker_file(settings.get_application_settings().get_tracker_file_path()).await.unwrap();
 
-        let node = Node { id, address: format!("{address}:{port}").parse().unwrap() };
+        let port = settings.get_network_settings().get_incoming_port();
 
-        let message_handler = Arc::new(msg_handler);
+        let node = Node { id: u256_random(), address: format!("0.0.0.0:{port}").parse().unwrap() };
+        let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{port}")).await.unwrap());
 
-        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(), Arc::clone(&message_handler), vec![], Some(public_key), Some(private_key));
+        let private_key = RsaPrivateKey::from_pkcs1_pem(settings.get_node_settings().get_private_key().unwrap().as_str()).unwrap();
+        let public_key = RsaPublicKey::from_pkcs1_pem(settings.get_node_settings().get_public_key().unwrap().as_str()).unwrap();
+
+        let msg_handler = GarlemliaMessageHandler::create(10);
+
+        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(),
+                                     Arc::new(msg_handler.clone()), vec![],
+                                     Some(public_key), Some(private_key));
+
+        let mut rt = RoutingTable::new(node.clone());
+        for node in settings.get_network_settings().get_known_nodes() {
+            rt.add_node(&Arc::new(msg_handler.clone()), node, &socket).await;
+        }
 
         Self {
             node: Arc::new(Mutex::new(node)),
-            socket: Arc::clone(&socket),
-            receive_addr: format!("{address}:{port}").parse().unwrap(),
-            message_handler,
+            socket,
+            receive_addr: format!("0.0.0.0:{port}").parse().unwrap(),
+            message_handler: Arc::new(msg_handler),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
-            file_storage: Arc::new(Mutex::new(file_storage)),
+            file_storage: Arc::new(Mutex::new(tracker.get_downloads().clone())),
             garlic: Arc::new(Mutex::new(garlic)),
             chunk_part_associations: Arc::new(Mutex::new(ChunkPartAssociations::new())),
             is_processing: Arc::new(Mutex::new(ProcessingCheck::new(false))),
@@ -170,14 +187,22 @@ impl Garlemlia {
         match msg.clone() {
             // For ping - respond with pong
             GarlemliaMessage::Ping { .. } => {
-                if let Err(e) = message_handler.send_no_recv(&socket, self_node.clone(), &src, &GarlemliaMessage::Pong { sender: self_node.clone() }).await {
+                if let Err(e) = message_handler.send_no_recv(&socket, self_node.clone(),
+                                                             &src,
+                                                             &GarlemliaMessage::Pong {
+                                                                 sender: self_node.clone()
+                                                             }).await {
                     eprintln!("Failed to send response to {}: {:?}", src, e);
                 }
             }
 
             // For pong - add the message to the response queue
             GarlemliaMessage::Pong { sender, .. } => {
-                let tx_info = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: GarlemliaMessage::Pong { sender } }).await;
+                let tx_info = message_handler.send_tx(sender_node.address,
+                                                      MessageChannel {
+                                                          node_id: sender_node.id,
+                                                          msg: GarlemliaMessage::Pong { sender }
+                                                      }).await;
 
                 match tx_info {
                     Ok(_) => {}
@@ -194,7 +219,13 @@ impl Garlemlia {
                 rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
 
                 // Add to response queue
-                let tx_info = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: GarlemliaMessage::AgreeAlt { alt_sequence_number, sender } }).await;
+                let tx_info = message_handler.send_tx(sender_node.address,
+                                                      MessageChannel {
+                                                          node_id: sender_node.id,
+                                                          msg: GarlemliaMessage::AgreeAlt {
+                                                              alt_sequence_number, sender
+                                                          }
+                                                      }).await;
 
                 match tx_info {
                     Ok(_) => {}
@@ -212,7 +243,11 @@ impl Garlemlia {
                     sender,
                 };
 
-                let tx_info = message_handler.send_tx(sender_node.address, MessageChannel { node_id: sender_node.id, msg: constructed }).await;
+                let tx_info = message_handler.send_tx(sender_node.address,
+                                                      MessageChannel {
+                                                          node_id: sender_node.id,
+                                                          msg: constructed
+                                                      }).await;
 
                 match tx_info {
                     Ok(_) => {}
@@ -226,7 +261,9 @@ impl Garlemlia {
             _ => {
                 {
                     // Attempt to add to routing table if applicable
-                    routing_table.lock().await.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
+                    routing_table.lock().await.add_node_from_responder(Arc::clone(&message_handler),
+                                                                       sender_node.clone(),
+                                                                       Arc::clone(&socket)).await;
                 }
 
                 // Actually run the message
