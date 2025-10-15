@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr};
-use std::path::Path;
 use std::sync::{Arc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use primitive_types::U256;
@@ -9,7 +8,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs1::DecodeRsaPublicKey;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex};
-use tokio::{fs, task};
+use tokio::task;
 
 use garlic_cast::GarlicCast;
 
@@ -55,19 +54,19 @@ pub struct Garlemlia {
 impl Garlemlia {
     pub async fn new(settings_dir: Option<String>, files_dir: Option<String>, recv_port: Option<u16>) -> Self {
         let mut settings = new_settings(settings_dir, files_dir).unwrap();
-        settings.save_settings().await.unwrap();
-
         if recv_port.is_some() {
             settings.get_network_settings_mut().set_incoming_port(recv_port);
         }
+
+        settings.save_settings().await.unwrap();
 
         let tracker = new_tracker(settings.get_application_settings().get_root_storage_path()).await.unwrap();
         tracker.save_tracker().await.unwrap();
 
         let port = settings.get_network_settings().get_incoming_port();
 
-        let node = Node { id: u256_random(), address: format!("0.0.0.0:{port}").parse().unwrap() };
-        let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{port}")).await.unwrap());
+        let node = Node { id: u256_random(), address: format!("127.0.0.1:{port}").parse().unwrap() };
+        let socket = Arc::new(UdpSocket::bind(format!("127.0.0.1:{port}")).await.unwrap());
 
         let mut rng = OsRng;
         let bits = 2048;
@@ -89,7 +88,7 @@ impl Garlemlia {
         Self {
             node: Arc::new(Mutex::new(node)),
             socket,
-            receive_addr: format!("0.0.0.0:{port}").parse().unwrap(),
+            receive_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             message_handler: Arc::new(msg_handler),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),
@@ -109,8 +108,8 @@ impl Garlemlia {
 
         let port = settings.get_network_settings().get_incoming_port();
 
-        let node = Node { id: u256_random(), address: format!("0.0.0.0:{port}").parse().unwrap() };
-        let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{port}")).await.unwrap());
+        let node = Node { id: u256_random(), address: format!("127.0.0.1:{port}").parse().unwrap() };
+        let socket = Arc::new(UdpSocket::bind(format!("127.0.0.1:{port}")).await.unwrap());
 
         let private_key = RsaPrivateKey::from_pkcs1_pem(settings.get_node_settings().get_private_key().unwrap().as_str()).unwrap();
         let public_key = RsaPublicKey::from_pkcs1_pem(settings.get_node_settings().get_public_key().unwrap().as_str()).unwrap();
@@ -129,7 +128,7 @@ impl Garlemlia {
         Self {
             node: Arc::new(Mutex::new(node)),
             socket,
-            receive_addr: format!("0.0.0.0:{port}").parse().unwrap(),
+            receive_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             message_handler: Arc::new(msg_handler),
             routing_table: Arc::new(Mutex::new(rt)),
             data_store: Arc::new(Mutex::new(HashMap::new())),

@@ -1,18 +1,15 @@
 use garlemlia::garlemlia::garlemlia::Garlemlia;
+use garlemlia::helper_functions::helper_functions::u256_random;
+use garlemlia::structs::constants::DEFAULT_K;
+use garlemlia::structs::garlemlia_message::{GarlemliaFindRequest, GarlemliaResponse, GarlemliaStoreRequest};
+use garlemlia::structs::node::Node;
 use primitive_types::U256;
-use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use garlemlia::helper_functions::helper_functions::u256_random;
-use garlemlia::structs::constants::DEFAULT_K;
-use garlemlia::structs::garlemlia_message::{GMessage, GarlemliaFindRequest, GarlemliaMessageHandler, GarlemliaResponse, GarlemliaStoreRequest};
-use garlemlia::structs::node::Node;
-use garlemlia::structs::routing_table::RoutingTable;
 
-async fn create_test_node(id: U256, port: u16) -> Garlemlia {
-    let mut node = Garlemlia::new(id, "127.0.0.1", port, RoutingTable::new(Node {id, address: SocketAddr::new("127.0.0.1".parse().unwrap(), port)}), GarlemliaMessageHandler::create(1), Box::new(Path::new("./running_nodes_files"))).await;
+async fn create_test_node(_id: U256, port: u16) -> Garlemlia {
+    let mut node = Garlemlia::new(Some(format!("./running_nodes_files/{port}").to_string()), Some(format!("./running_nodes_files/{port}/node_files").to_string()), Some(port)).await;
 
     // Spawn a task to keep the node running and listening
     node.start(Arc::clone(&node.socket)).await;
@@ -34,7 +31,7 @@ async fn test_iterative_find_node() {
     node2.join_network_no_refresh(Arc::clone(&node2.socket), &node3_addr).await;
 
     // Perform lookup
-    let found_nodes = node1.iterative_find_node(Arc::clone(&node1.socket), U256::from(2)).await;
+    let found_nodes = node1.iterative_find_node(Arc::clone(&node1.socket), node2_info.id).await;
 
     node1.stop().await;
     node2.stop().await;
@@ -153,6 +150,7 @@ async fn test_iterative_find_value() {
     let mut node4 = create_test_node(U256::from(4), 8004).await;
 
     let node3_info = node3.node.lock().await.clone();
+    let node2_info = node2.node.lock().await.clone();
     let node1_info = node1.node.lock().await.clone();
 
     // Let nodes join the network
@@ -163,11 +161,11 @@ async fn test_iterative_find_value() {
     sleep(Duration::from_secs(1)).await;
 
     // Store a value in node1
-    node1.store_value(Arc::clone(&node1.socket), GarlemliaStoreRequest::Value { id: U256::from(2), value: "Hello, world!".to_string() }, 2).await;
+    node1.store_value(Arc::clone(&node1.socket), GarlemliaStoreRequest::Value { id: node2_info.id, value: "Hello, world!".to_string() }, 2).await;
     sleep(Duration::from_secs(1)).await;
 
     // Attempt to retrieve the stored value from node4
-    let value = node4.iterative_find_value(Arc::clone(&node4.socket), GarlemliaFindRequest::Key { id: U256::from(2), request_id: u256_random() }).await;
+    let value = node4.iterative_find_value(Arc::clone(&node4.socket), GarlemliaFindRequest::Key { id: node2_info.id, request_id: u256_random() }).await;
 
     node1.stop().await;
     node2.stop().await;
@@ -189,6 +187,4 @@ async fn test_iterative_find_value() {
             assert!(false, "Value should be found");
         }
     }
-
-
 }
