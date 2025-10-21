@@ -84,6 +84,12 @@ impl GarlemliaFilesTracker {
     }
 }
 
+impl Drop for GarlemliaFilesTracker {
+    fn drop(&mut self) {
+        let _ = self.save_tracker();
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GarlemliaData {
     Value { id: U256, value: String },

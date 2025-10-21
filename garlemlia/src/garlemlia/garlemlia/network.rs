@@ -8,11 +8,29 @@ use super::Garlemlia;
 
 impl Garlemlia {
     /// Add a node to the routing table
-    pub async fn add_node(&self, socket: &UdpSocket, node: Node) {
+    pub async fn add_node(&mut self, socket: &UdpSocket, node: Node) {
         let self_node = self.get_node().await;
         if node.id != self_node.id {
             let message_handler = Arc::clone(&self.message_handler);
             self.routing_table.lock().await.add_node(&message_handler, node, socket).await;
+        }
+
+        {
+            let rt = self.routing_table.lock().await;
+            let mut settings_locked = self.settings.lock().await;
+
+            let mut old_nodes = settings_locked.get_network_settings().get_known_nodes();
+            old_nodes.sort_by_key(|n| n.id);
+
+            let mut new_nodes = rt.flat_nodes().await;
+            new_nodes.sort_by_key(|n| n.id);
+
+            if old_nodes != new_nodes {
+                settings_locked.get_network_settings_mut().set_known_nodes(new_nodes);
+                if let Err(e) = settings_locked.save_settings().await {
+                    eprintln!("Failed to save settings: {: }", e);
+                }
+            }
         }
     }
 
@@ -62,7 +80,7 @@ impl Garlemlia {
                 response = self.message_handler.recv(200, &target).await;
             }
 
-            // Check if bootstrap node exists
+            // Check if the bootstrap node exists
             if response.is_ok() {
                 match response.unwrap() {
                     GarlemliaMessage::Response { nodes, .. } => {
@@ -80,6 +98,25 @@ impl Garlemlia {
                 self.iterative_find_node(socket_clone.clone(), self_node.id).await;
                 // Refresh buckets to provide better filled buckets
                 self.refresh_buckets(socket_clone).await;
+
+                {
+                    let rt = self.routing_table.lock().await;
+                    let mut settings_locked = self.settings.lock().await;
+
+                    let mut old_nodes = settings_locked.get_network_settings().get_known_nodes();
+                    old_nodes.sort_by_key(|n| n.id);
+
+                    let mut new_nodes = rt.flat_nodes().await;
+                    new_nodes.sort_by_key(|n| n.id);
+
+                    if old_nodes != new_nodes {
+                        settings_locked.get_network_settings_mut().set_known_nodes(new_nodes);
+                        if let Err(e) = settings_locked.save_settings().await {
+                            eprintln!("Failed to save settings: {: }", e);
+                        }
+                    }
+                }
+
                 break;
             } else {
                 println!("NODE AT {target} FAILED, TRYING NEXT NODE");
@@ -122,6 +159,24 @@ impl Garlemlia {
             // Search for self
             self.iterative_find_node(socket_clone.clone(), self_node.id).await;
             // No bucket refresh here
+
+            {
+                let rt = self.routing_table.lock().await;
+                let mut settings_locked = self.settings.lock().await;
+
+                let mut old_nodes = settings_locked.get_network_settings().get_known_nodes();
+                old_nodes.sort_by_key(|n| n.id);
+
+                let mut new_nodes = rt.flat_nodes().await;
+                new_nodes.sort_by_key(|n| n.id);
+
+                if old_nodes != new_nodes {
+                    settings_locked.get_network_settings_mut().set_known_nodes(new_nodes);
+                    if let Err(e) = settings_locked.save_settings().await {
+                        eprintln!("Failed to save settings: {: }", e);
+                    }
+                }
+            }
         } else {
             println!("FAILED TO JOIN NETWORK");
         }

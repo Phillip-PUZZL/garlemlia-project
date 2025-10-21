@@ -89,15 +89,15 @@ impl GarlemliaFunctions {
     /// Basic Kademlia iterative find node implementation
     pub async fn iterative_find_node(context: &GarlemliaContext,
                                      target_id: U256) -> Vec<Node> {
-        // For storing all nodes which have already been queried so as not to re-query
+        // For storing all nodes that have already been queried so as not to re-query
         let mut queried_nodes = HashSet::new();
 
-        // Get initial candidate set from the routing table.
+        // Get the initial candidate set from the routing table.
         let mut initial_nodes = context.routing_table.lock().await
             .find_closest_nodes(target_id, LOOKUP_ALPHA)
             .await;
         Self::refresh_initial_nodes(context, &mut initial_nodes, target_id).await;
-        // Initialize candidate set (top_k)
+        // Initialize the candidate set (top_k)
         let mut top_k = initial_nodes.clone();
         top_k.sort_by_key(|n| n.id ^ target_id);
         top_k.truncate(DEFAULT_K);
@@ -156,7 +156,7 @@ impl GarlemliaFunctions {
             }
 
             {
-                // Adds to list of known nodes
+                // Adds to the list of known nodes
                 context.garlic.lock().await.update_known(new_nodes.clone());
             }
 
@@ -167,14 +167,14 @@ impl GarlemliaFunctions {
             new_candidate_set.dedup();
             // Remove self in case it is added
             new_candidate_set.retain(|n| *n != context.self_node);
-            // Keep only closest K nodes
+            // Keep only the closest K nodes
             new_candidate_set.truncate(DEFAULT_K);
 
             // Compare candidate sets using IDs (order-independent)
             let old_ids: HashSet<U256> = top_k.iter().map(|n| n.id).collect();
             let new_ids: HashSet<U256> = new_candidate_set.iter().map(|n| n.id).collect();
             if old_ids == new_ids {
-                // No new closest K nodes found, can stop querying
+                // No new closest K nodes found can stop querying
                 break;
             }
             top_k = new_candidate_set;
@@ -222,12 +222,12 @@ impl GarlemliaFunctions {
         // Keep track of nodes already queried
         let mut queried_nodes = HashSet::new();
 
-        // Get initial candidate set from the routing table.
+        // Get the initial candidate set from the routing table.
         let mut initial_nodes = context.routing_table.lock().await
             .find_closest_nodes(key, LOOKUP_ALPHA)
             .await;
         Self::refresh_initial_nodes(context, &mut initial_nodes, key).await;
-        // Initialize candidate set (top_k)
+        // Initialize the candidate set (top_k)
         let mut top_k = initial_nodes.clone();
         top_k.sort_by_key(|n| n.id ^ key);
         top_k.truncate(DEFAULT_K);
@@ -304,7 +304,7 @@ impl GarlemliaFunctions {
             for task in tasks {
                 if let Ok(Some(result)) = task.await {
                     match result {
-                        // Return immediately if value is found
+                        // Return immediately if the value is found
                         Ok(value) => return Some(value),
                         // Else, add the found nodes to the list
                         Err(received_nodes) => {
@@ -360,7 +360,7 @@ impl GarlemliaFunctions {
             if node.id == context.self_node.id {
                 let mut store_val = request.to_store_data();
 
-                // Run through process of determining store type
+                // Run through the process of determining the stored value type
                 if request.is_chunk_info() {
                     // Add chunk info to pending chunks
                     context.chunk_part_associations.lock().await.add_to_chunk_storage(request.get_file_chunk_info().unwrap());
@@ -373,7 +373,7 @@ impl GarlemliaFunctions {
                     if cpa.am_storing_chunk(chunk_id) {
                         // Get mutable storage FileChunkInfo
                         let chunk_info = cpa.get_mut_chunk_stored(chunk_id).unwrap();
-                        // Add appropriate chunk part information
+                        // Add the appropriate chunk part information
                         chunk_info.parts_info.push(request.get_chunk_part_info().unwrap());
 
                         // Get the index of the chunk part
@@ -393,13 +393,13 @@ impl GarlemliaFunctions {
 
                             // Check whether successfully assembled chunk
                             if check.is_ok() {
-                                // Remove chunk info from pending list
+                                // Remove chunk info from the pending list
                                 cpa.remove_from_chunk_storage(chunk_id);
                             }
                         }
                     }
 
-                    // Set flag since this is a chunk part
+                    // Set the flag since this is a chunk part
                     store_val = None;
                 }
 
@@ -490,7 +490,7 @@ impl GarlemliaFunctions {
         response
     }
 
-    /// Function to match a request / response and run appropriate action
+    /// Function to match a request / response and run the appropriate action
     pub async fn run_message(self_node: Node,
                              socket: Arc<UdpSocket>,
                              message_handler: Arc<Box<dyn GMessage>>,
@@ -525,7 +525,7 @@ impl GarlemliaFunctions {
                 };
 
                 if cfg!(debug_assertions) {
-                    //println!("Responding to message with {:?}", response);
+                    // println!("Responding to message with {:?}", response);
                 }
 
                 Some(response)
@@ -626,7 +626,7 @@ impl GarlemliaFunctions {
                             // Assemble the whole chunk from its parts
                             let check = file_storage.lock().await.assemble_chunk(chunk_id, chunk_info.parts_count).await;
 
-                            // Verify that chunk was assembled properly
+                            // Verify that the chunk was assembled properly
                             if check.is_ok() {
                                 // Remove chunk part information from the list of pending chunks
                                 cpa.remove_from_chunk_storage(chunk_id);
@@ -688,7 +688,7 @@ impl GarlemliaFunctions {
 
             // Use find_closest_nodes() if value is not found
             GarlemliaMessage::FindValue { request, .. } => {
-                // Get key for request and get entry in data store, if it exists
+                // Get key for request and get entry in the data store if it exists
                 let key = request.get_id();
                 let value = data_store.lock().await.get(&key).cloned();
 
@@ -744,7 +744,7 @@ impl GarlemliaFunctions {
             }
 
             GarlemliaMessage::Garlic { msg, sender } => {
-                // Firstly need to send an IsAlive message for some message types so that sender knows
+                // Firstly, need to send an IsAlive message for some message types so that the sender knows
                 // we received the message
                 match msg {
                     GarlicMessage::FindProxy { .. } |
@@ -765,7 +765,7 @@ impl GarlemliaFunctions {
                 // Need to get a lock on processing Garlic messages
                 ProcessingCheck::wait_and_acquire(&check_processing).await;
 
-                // Get lock on our garlic handler and retrieve message
+                // Get the lock on our garlic handler and retrieve the message
                 let action_res;
                 {
                     action_res = garlic.lock().await.recv(sender, msg).await;
@@ -816,16 +816,16 @@ impl GarlemliaFunctions {
                                     // Got data from request
                                     let data = response_data.clone().unwrap();
                                     match data.clone() {
-                                        // Check if response has file chunk info
+                                        // Check if the response has file chunk info
                                         GarlemliaResponse::FileChunkInfo { sender, .. } => {
                                             // Don't have all file chunk info
                                             let mut send_and_process = false;
                                             {
                                                 // Lock pending chunk info
                                                 let mut cpa = chunk_part_associations.lock().await;
-                                                // Check whether we already have this chunk info
+                                                // Check whether we already have the chunk info
                                                 if !cpa.already_has.contains_key(&data.get_chunk_id().unwrap()) {
-                                                    // Add this chunk info to the list
+                                                    // Add the chunk info to the list
                                                     cpa.add_to_chunk_proxy(data.get_proxy_file_chunk_info().unwrap());
                                                     // Associate chunk ID with request ID
                                                     cpa.already_has.insert(data.get_chunk_id().unwrap(), data.get_request_id().unwrap());
@@ -840,14 +840,14 @@ impl GarlemliaFunctions {
                                                     garlic.lock().await.send_chunk_part(data.get_request_id().unwrap(), data, false).await;
                                                 }
 
-                                                // Prepare message to request chunk parts
+                                                // Prepare the message to request chunk parts
                                                 let download_chunk_msg = GarlemliaMessage::DownloadFileChunk {
                                                     sender: self_node.clone(),
                                                     request: GarlemliaFindRequest::Key { id: key, request_id: request_id.request_id }
                                                 };
 
                                                 {
-                                                    // Send message to request chunk parts
+                                                    // Send the message to request chunk parts
                                                     if let Err(e) = message_handler.send_no_recv(&Arc::from(Arc::clone(&socket)), self_node.clone(), &sender.address, &download_chunk_msg).await {
                                                         eprintln!("Failed to send IsAlive to {}: {:?}", sender.address, e);
                                                     }
@@ -887,7 +887,7 @@ impl GarlemliaFunctions {
                                                     parts_count,
                                                     parts_info: vec![],
                                                 };
-                                                // Add this chunk info to the temporary list
+                                                // Add the chunk info to the temporary list
                                                 cpa.add_to_chunk_proxy(proxy_chunk_info);
                                                 // Add this to our list of already having
                                                 cpa.already_has.insert(id, request_id);
@@ -915,7 +915,7 @@ impl GarlemliaFunctions {
                                             let proxy_chunk_info = cpa.get_mut_chunk_proxy(id).unwrap();
                                             proxy_chunk_info.parts_info.push(proxy_chunk_part);
 
-                                            // If we have all of the chunk parts
+                                            // If we have all the chunk parts
                                             if proxy_chunk_info.parts_info.len() == proxy_chunk_info.parts_count {
                                                 // Get all chunk parts
                                                 let parts_data = proxy_chunk_info.parts_info.clone();
@@ -925,7 +925,7 @@ impl GarlemliaFunctions {
                                                     let mut remove_me = false;
                                                     // Check if this is the last part
                                                     if i == parts_data.len() - 1 {
-                                                        // If so then set flag for removing at the end
+                                                        // If so, then set the flag for removing at the end
                                                         remove_me = true;
                                                     }
 
@@ -940,7 +940,7 @@ impl GarlemliaFunctions {
                                                     // Send store request for chunk part
                                                     GarlemliaFunctions::store_value(&context_data, send_store_req, 2).await;
 
-                                                    // Remove chunk info from list if all parts sent
+                                                    // Remove chunk info from the list if all parts sent
                                                     if remove_me {
                                                         cpa.remove_from_chunk_proxy(id);
                                                         cpa.already_has.remove(&id);
@@ -964,7 +964,7 @@ impl GarlemliaFunctions {
                                         let chunk_id = data.get_chunk_id().unwrap();
                                         // Verify that we are a proxy for the chunk part
                                         if cpa.am_proxy_for_chunk(chunk_id) {
-                                            // Add chunk part to pending list of chunk parts
+                                            // Add the chunk part to the pending list of chunk parts
                                             let proxy_chunk_info = cpa.get_mut_chunk_proxy(chunk_id).unwrap();
                                             proxy_chunk_info.parts_info.push(data.get_proxy_chunk_part_info().unwrap());
 
@@ -976,13 +976,13 @@ impl GarlemliaFunctions {
                                                 // Loop through chunk parts
                                                 for i in 0..parts_data.len() {
                                                     let mut remove_me = false;
-                                                    // Check if this is final chunk part
+                                                    // Check if this is the final chunk part
                                                     if i == parts_data.len() - 1 {
-                                                        // Final chunk part, set flag to remove
+                                                        // Final chunk part, set the flag to remove
                                                         remove_me = true;
                                                     }
 
-                                                    // Generate message for sending this chunk part
+                                                    // Generate the message for sending this chunk part
                                                     let response = GarlemliaResponse::ChunkPart {
                                                         request_id: data.get_request_id().unwrap(),
                                                         chunk_id,
@@ -996,7 +996,7 @@ impl GarlemliaFunctions {
                                                         garlic.lock().await.send_chunk_part(data.get_request_id().unwrap(), response, remove_me).await;
                                                     }
 
-                                                    // Remove chunk information from pending list if
+                                                    // Remove chunk information from the pending list if
                                                     // all parts sent
                                                     if remove_me {
                                                         cpa.remove_from_chunk_proxy(chunk_id);
@@ -1035,7 +1035,7 @@ impl GarlemliaFunctions {
 
                                             // Check if we already have all the chunk parts
                                             if temp_chunk_info.parts_info.len() == temp_chunk_info.parts_count {
-                                                // Assemble entire chunk from parts
+                                                // Assemble the entire chunk from parts
                                                 let _ = file_storage.lock().await.assemble_temp_chunk(chunk_id, temp_chunk_info.parts_count).await;
 
                                                 {
@@ -1049,9 +1049,9 @@ impl GarlemliaFunctions {
                                     GarlemliaResponse::FileChunkInfo { .. } => {
                                         // Lock pending chunk parts info
                                         let mut cpa = chunk_part_associations.lock().await;
-                                        // Check if this chunk info has already been set to pending
+                                        // Check if the chunk info has already been set to pending
                                         if !cpa.already_has.contains_key(&data.get_chunk_id().unwrap()) {
-                                            // Add this chunk info to pending
+                                            // Add the chunk info to pending
                                             cpa.add_to_chunk_downloads(data.get_file_chunk_info().unwrap());
                                             cpa.already_has.insert(data.get_chunk_id().unwrap(), data.get_request_id().unwrap());
                                         }
@@ -1094,14 +1094,14 @@ impl GarlemliaFunctions {
                     let mut garlic_locked = garlic.lock().await;
                     already_checked = garlic_locked.has_search_checked(request_id.clone());
 
-                    // If we haven't already done search
+                    // If we haven't already done the search
                     if !already_checked {
                         // Set this to having been searched
                         garlic_locked.check_search(request_id.clone());
                     }
                 }
 
-                // Get flat routing table
+                // Get the flat routing table
                 let send_search_nodes;
                 {
                     send_search_nodes = routing_table.lock().await.flat_nodes().await;
@@ -1123,7 +1123,7 @@ impl GarlemliaFunctions {
                 }
 
                 {
-                    // Stop lock on shared data
+                    // Stop the lock on shared data
                     check_processing.lock().await.set(false);
                 }
 

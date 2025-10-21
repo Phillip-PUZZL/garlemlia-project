@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
-async fn create_test_node(_id: U256, port: u16) -> Garlemlia {
-    let mut node = Garlemlia::new(Some(format!("./running_nodes_files/{port}").to_string()), Some(format!("./running_nodes_files/{port}/node_files").to_string()), Some(port)).await;
+async fn create_test_node(id: U256, port: u16) -> Garlemlia {
+    let mut node = Garlemlia::new_with_id(Some(format!("./running_nodes_files/{port}").to_string()), Some(format!("./running_nodes_files/{port}/node_files").to_string()), Some(port), id).await;
 
     // Spawn a task to keep the node running and listening
     node.start(Arc::clone(&node.socket)).await;
@@ -44,13 +44,14 @@ async fn test_iterative_find_node() {
 
 #[tokio::test]
 async fn test_add_node_to_routing_table() {
-    let kad = create_test_node(U256::from(1), 8080).await;
+    let mut kad = create_test_node(U256::from(1), 8080).await;
+    let socket = Arc::clone(&kad.socket);
     let node = Node {
         id: U256::from(42),
         address: "127.0.0.1:8001".parse().unwrap(),
     };
 
-    kad.add_node(&kad.socket, node.clone()).await;
+    kad.add_node(&socket, node.clone()).await;
 
     let rt = kad.routing_table.lock().await;
 
@@ -65,7 +66,8 @@ async fn test_add_node_to_routing_table() {
 
 #[tokio::test]
 async fn test_add_node_ping() {
-    let kad = create_test_node(U256::from(1), 8081).await;
+    let mut kad = create_test_node(U256::from(1), 8081).await;
+    let socket = Arc::clone(&kad.socket);
     let test = create_test_node(U256::from(128), 8082).await;
 
     let base_id: U256 = U256::from(128);
@@ -89,9 +91,9 @@ async fn test_add_node_ping() {
     let test_info = test.node.lock().await.clone();
 
     // Insert all nodes into the routing table
-    kad.add_node(&kad.socket, test_info.clone()).await;
+    kad.add_node(&socket, test_info.clone()).await;
     for node in &nodes {
-        kad.add_node(&kad.socket, node.clone()).await;
+        kad.add_node(&socket, node.clone()).await;
     }
 
     let orig;
@@ -105,7 +107,7 @@ async fn test_add_node_ping() {
         id: base_id + (DEFAULT_K),
         address: "127.0.0.1:9000".parse().unwrap(),
     };
-    kad.add_node(&kad.socket, overflow_node.clone()).await;
+    kad.add_node(&socket, overflow_node.clone()).await;
 
     let mut new;
     {
@@ -120,7 +122,7 @@ async fn test_add_node_ping() {
 
     test.stop().await;
 
-    kad.add_node(&kad.socket, overflow_node.clone()).await;
+    kad.add_node(&socket, overflow_node.clone()).await;
 
     {
         let rt = kad.routing_table.lock().await;

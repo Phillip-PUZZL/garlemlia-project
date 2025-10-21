@@ -19,7 +19,7 @@ use crate::structs::file_chunks::{ChunkPartAssociations, ProcessingCheck};
 use crate::structs::garlemlia_message::{GMessage, GarlemliaMessage, GarlemliaMessageHandler, MessageChannel};
 use crate::structs::node::Node;
 use crate::structs::routing_table::RoutingTable;
-use crate::structs::garlemlia_data::{load_tracker_file, new_tracker, GarlemliaData};
+use crate::structs::garlemlia_data::{load_tracker_file, new_tracker, GarlemliaData, GarlemliaFilesTracker};
 
 mod functions;
 mod find;
@@ -30,7 +30,7 @@ pub use functions::GarlemliaFunctions;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use crate::helper_functions::helper_functions::u256_random;
-use crate::structs::settings::{load_settings_file, new_settings};
+use crate::structs::settings::{load_settings_file, new_settings, Settings};
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -47,6 +47,8 @@ pub struct Garlemlia {
     is_processing: Arc<Mutex<ProcessingCheck>>,
     stop_signal: Arc<AtomicBool>,
     join_handle: Arc<Option<task::JoinHandle<()>>>,
+    settings: Arc<Mutex<Settings>>,
+    tracker: GarlemliaFilesTracker
 }
 
 // TODO: Implement new event thread for watching last_seen information and pinging nodes
@@ -58,7 +60,9 @@ impl Garlemlia {
             settings.get_network_settings_mut().set_incoming_port(recv_port);
         }
 
-        settings.save_settings().await.unwrap();
+        if let Err(e) = settings.save_settings().await {
+            eprintln!("Failed to save settings: {: }", e);
+        }
 
         let tracker = new_tracker(settings.get_application_settings().get_root_storage_path()).await.unwrap();
         tracker.save_tracker().await.unwrap();
@@ -75,7 +79,9 @@ impl Garlemlia {
 
         settings.get_node_settings_mut().set_private_key(Some(private_key.to_pkcs8_pem(LineEnding::LF).unwrap().to_string()));
         settings.get_node_settings_mut().set_public_key(Some(public_key.to_public_key_pem(LineEnding::LF).unwrap().to_string()));
-        settings.save_settings().await.unwrap();
+        if let Err(e) = settings.save_settings().await {
+            eprintln!("Failed to save settings: {: }", e);
+        }
 
         let msg_handler = GarlemliaMessageHandler::create(10);
 
@@ -98,6 +104,63 @@ impl Garlemlia {
             is_processing: Arc::new(Mutex::new(ProcessingCheck::new(false))),
             stop_signal: Arc::new(AtomicBool::new(false)),
             join_handle: Arc::new(None),
+            settings: Arc::new(Mutex::new(settings)),
+            tracker
+        }
+    }
+
+    pub async fn new_with_id(settings_dir: Option<String>, files_dir: Option<String>, recv_port: Option<u16>, id: U256) -> Self {
+        let mut settings = new_settings(settings_dir, files_dir).unwrap();
+        if recv_port.is_some() {
+            settings.get_network_settings_mut().set_incoming_port(recv_port);
+        }
+
+        if let Err(e) = settings.save_settings().await {
+            eprintln!("Failed to save settings: {: }", e);
+        }
+
+        let tracker = new_tracker(settings.get_application_settings().get_root_storage_path()).await.unwrap();
+        tracker.save_tracker().await.unwrap();
+
+        let port = settings.get_network_settings().get_incoming_port();
+
+        let node = Node { id, address: format!("127.0.0.1:{port}").parse().unwrap() };
+        let socket = Arc::new(UdpSocket::bind(format!("127.0.0.1:{port}")).await.unwrap());
+
+        let mut rng = OsRng;
+        let bits = 2048;
+        let private_key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
+        let public_key = RsaPublicKey::from(&private_key);
+
+        settings.get_node_settings_mut().set_private_key(Some(private_key.to_pkcs8_pem(LineEnding::LF).unwrap().to_string()));
+        settings.get_node_settings_mut().set_public_key(Some(public_key.to_public_key_pem(LineEnding::LF).unwrap().to_string()));
+        if let Err(e) = settings.save_settings().await {
+            eprintln!("Failed to save settings: {: }", e);
+        }
+
+        let msg_handler = GarlemliaMessageHandler::create(10);
+
+        let garlic = GarlicCast::new(Arc::clone(&socket), node.clone(),
+                                     Arc::new(msg_handler.clone()), vec![],
+                                     Some(public_key), Some(private_key));
+
+        let rt = RoutingTable::new(node.clone());
+
+        Self {
+            node: Arc::new(Mutex::new(node)),
+            socket,
+            receive_addr: format!("127.0.0.1:{port}").parse().unwrap(),
+            message_handler: Arc::new(msg_handler),
+            routing_table: Arc::new(Mutex::new(rt)),
+            data_store: Arc::new(Mutex::new(HashMap::new())),
+            file_storage: Arc::new(Mutex::new(tracker.get_downloads().clone())),
+            garlic: Arc::new(Mutex::new(garlic)),
+            chunk_part_associations: Arc::new(Mutex::new(ChunkPartAssociations::new())),
+            is_processing: Arc::new(Mutex::new(ProcessingCheck::new(false))),
+            stop_signal: Arc::new(AtomicBool::new(false)),
+            join_handle: Arc::new(None),
+            settings: Arc::new(Mutex::new(settings)),
+            tracker
         }
     }
 
@@ -138,6 +201,8 @@ impl Garlemlia {
             is_processing: Arc::new(Mutex::new(ProcessingCheck::new(false))),
             stop_signal: Arc::new(AtomicBool::new(false)),
             join_handle: Arc::new(None),
+            settings: Arc::new(Mutex::new(settings)),
+            tracker
         }
     }
 
@@ -183,9 +248,16 @@ impl Garlemlia {
                              msg: GarlemliaMessage,
                              sender_node: Node,
                              src: SocketAddr) {
+
+
+
         match msg.clone() {
             // For ping - respond with pong
             GarlemliaMessage::Ping { .. } => {
+                let mut rt = routing_table.lock().await;
+                // Add to the routing table if applicable
+                rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
+
                 if let Err(e) = message_handler.send_no_recv(&socket, self_node.clone(),
                                                              &src,
                                                              &GarlemliaMessage::Pong {
@@ -206,7 +278,7 @@ impl Garlemlia {
                 match tx_info {
                     Ok(_) => {}
                     Err(e) => {
-                        eprintln!("Failed to send TX for message from {}: {:?}", src, e);
+                        eprintln!("Failed to send TX for the message from {}: {:?}", src, e);
                     }
                 }
             }
@@ -214,10 +286,10 @@ impl Garlemlia {
             // For agreeing to be an alt node
             GarlemliaMessage::AgreeAlt { alt_sequence_number, sender } => {
                 let mut rt = routing_table.lock().await;
-                // Add to routing table if applicable
+                // Add to the routing table if applicable
                 rt.add_node_from_responder(Arc::clone(&message_handler), sender_node.clone(), Arc::clone(&socket)).await;
 
-                // Add to response queue
+                // Add to the response queue
                 let tx_info = message_handler.send_tx(sender_node.address,
                                                       MessageChannel {
                                                           node_id: sender_node.id,
@@ -234,7 +306,7 @@ impl Garlemlia {
                 }
             }
 
-            // For a response - add to response queue after extrapolating data
+            // For a response - add to the response queue after extrapolating data
             GarlemliaMessage::Response { nodes, value, sender, .. } => {
                 let constructed = GarlemliaMessage::Response {
                     nodes,
@@ -278,7 +350,7 @@ impl Garlemlia {
                                                                msg.clone(),
                                                                sender_node.clone()).await;
 
-                // Check for response and send if it exists
+                // Check for the response and send if it exists
                 if response.is_some() {
                     if let Err(e) = message_handler.send_no_recv(&socket, self_node.clone(), &src, &response.unwrap()).await {
                         eprintln!("Failed to send response to {}: {:?}", src, e);
@@ -300,6 +372,7 @@ impl Garlemlia {
         let chunk_part_associations = Arc::clone(&self.chunk_part_associations);
         let check_processing = Arc::clone(&self.is_processing);
         let stop_clone = Arc::clone(&self.stop_signal);
+        let mut settings = Arc::clone(&self.settings);
         println!("STARTING {}", socket.local_addr().unwrap());
 
         // Main event loop - listen for messages
@@ -312,7 +385,7 @@ impl Garlemlia {
                     {
                         self_ref = self_node.lock().await.clone();
                     }
-                    // Get message content from json data
+                    // Get message content from the JSON data
                     let msg: GarlemliaMessage = serde_json::from_slice(&buf[..size]).unwrap();
 
                     //println!("{} received {:?}", socket.local_addr().unwrap(), msg);
@@ -363,6 +436,24 @@ impl Garlemlia {
                                                    sender_node,
                                                    src).await;
                     });
+
+                    {
+                        let rt = routing_table.lock().await;
+                        let mut settings_locked = settings.lock().await;
+
+                        let mut old_nodes = settings_locked.get_network_settings().get_known_nodes();
+                        old_nodes.sort_by_key(|n| n.id);
+
+                        let mut new_nodes = rt.flat_nodes().await;
+                        new_nodes.sort_by_key(|n| n.id);
+
+                        if old_nodes != new_nodes {
+                            settings_locked.get_network_settings_mut().set_known_nodes(new_nodes);
+                            if let Err(e) = settings_locked.save_settings().await {
+                                eprintln!("Failed to save settings: {: }", e);
+                            }
+                        }
+                    }
                 }
             }
             println!("FINISHED {}", socket.local_addr().unwrap());

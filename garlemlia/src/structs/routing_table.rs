@@ -48,7 +48,7 @@ impl RoutingTable {
         }
     }
 
-    /// Set routing table
+    /// Set the routing table
     pub async fn update_from(&mut self, other: RoutingTable) {
         self.local_node = other.local_node().clone();
         let mut self_buckets = self.buckets.lock().await;
@@ -79,7 +79,7 @@ impl RoutingTable {
         (255 - xor_distance.leading_zeros()) as u8
     }
 
-    /// Get flat vector of all nodes in my routing table
+    /// Get the flat vector of all nodes in my routing table
     pub async fn flat_nodes(&self) -> Vec<Node> {
         self.buckets
             .lock()
@@ -100,7 +100,7 @@ impl RoutingTable {
             .insert(node);
     }
 
-    /// Check if KBucket is full, and if it is not then add a node
+    /// Check if KBucket is full, and if it is not, then add a node
     pub async fn check_and_update_bucket(&mut self, node: Node, index: u8) -> bool {
         let mut self_buckets = self.buckets.lock().await;
         if let Some(bucket) = self_buckets.get_mut(&index) {
@@ -151,7 +151,7 @@ impl RoutingTable {
                 };
 
                 {
-                    // Send message to LRU node
+                    // Send the message to LRU node
                     // If sending fails, log the error and continue.
                     if let Err(e) = mh.send(&socket_clone, local_node.clone(), &lru_node.address, &ping_msg).await {
                         eprintln!("Failed to send ping to {}: {:?}", lru_node.address, e);
@@ -318,7 +318,7 @@ impl RoutingTable {
 
     /// Generate random ID for each bucket - used when refreshing buckets
     pub fn random_id_for_bucket(self_id: U256, bucket_index: u8) -> U256 {
-        // The bit we want to differ at (counting from the left,
+        // The bit we want to differ from (counting from the left,
         // where 0 = top bit, 255 = bottom bit):
         let bit_pos = 255 - bucket_index;
 
@@ -329,13 +329,13 @@ impl RoutingTable {
 
         // 2. Now randomize all the bits below `bit_pos`.
         //    That means the `bit_pos` least significant bits can be anything.
-        //    We can generate a random 256-bit number, but then zero out
+        //    We can generate a random 256-bit number but then zero out
         //    all bits except the lower `bit_pos`.
         //
         //    If bit_pos is 0, that means we only flipped the top bit
-        //    and there's no "lower bits" to randomize, so handle that case:
+        //    and there are no "lower bits" to randomize, so handle that case:
         if bit_pos > 0 {
-            // e.g. for bit_pos=5, we want to keep only bits [0..4].
+            // e.g., for bit_pos=5, we want to keep only bits [0..4].
             let mask_below = (U256::from(1) << bit_pos) - 1;  // e.g. (1 << 5) - 1 = 0b11111
 
             // A random U256 from the standard RNG:
@@ -344,9 +344,9 @@ impl RoutingTable {
             // Keep only the lower bit_pos bits:
             let random_bits = random_lower & mask_below;
 
-            // Combine these random bits into candidate:
+            // Combine these random bits into the candidate:
             // First, zero out the bits below bit_pos (they might already be zero, but let's be explicit)
-            candidate &= !mask_below;  // not strictly needed since we already matched above bit
+            candidate &= !mask_below;  // not strictly needed since we already matched the above bit
             // Then OR in the random bits
             candidate |= random_bits;
         }
