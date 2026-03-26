@@ -122,9 +122,9 @@ impl GarlemliaFunctions {
     }
 
     async fn query_find_node_round(context: &GarlemliaContext,
-        target_id: U256,
-        nodes_to_query: Vec<Node>,
-        queried_nodes: &mut HashSet<SocketAddr>) -> Vec<Node> {
+                                   target_id: U256,
+                                   nodes_to_query: Vec<Node>,
+                                   queried_nodes: &mut HashSet<SocketAddr>) -> Vec<Node> {
         let mut tasks = Vec::new();
 
         for node in nodes_to_query {
@@ -168,9 +168,9 @@ impl GarlemliaFunctions {
     }
 
     async fn query_find_value_round(context: &GarlemliaContext,
-        request: GarlemliaFindRequest,
-        nodes_to_query: Vec<Node>,
-        queried_nodes: &mut HashSet<SocketAddr>) -> LookupOutcome<GarlemliaResponse> {
+                                    request: GarlemliaFindRequest,
+                                    nodes_to_query: Vec<Node>,
+                                    queried_nodes: &mut HashSet<SocketAddr>) -> LookupOutcome<GarlemliaResponse> {
         let mut tasks = Vec::new();
 
         for node in nodes_to_query {
@@ -447,7 +447,7 @@ impl GarlemliaFunctions {
     }
 
     pub async fn search_file(data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
-                             file_name: String,) -> Option<GarlemliaResponse> {
+                             file_name: String, ) -> Option<GarlemliaResponse> {
         let ds = data_store.lock().await;
 
         ds.values().find_map(|data| match data {
@@ -458,16 +458,16 @@ impl GarlemliaFunctions {
 
     /// Function to match a request / response and run the appropriate action
     pub async fn run_message(self_node: Node,
-        socket: Arc<UdpSocket>,
-        message_handler: Arc<Box<dyn GMessage>>,
-        routing_table: Arc<Mutex<RoutingTable>>,
-        data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
-        garlic: Arc<Mutex<GarlicCast>>,
-        file_storage: Arc<Mutex<FileStorage>>,
-        chunk_part_associations: Arc<Mutex<ChunkPartAssociations>>,
-        check_processing: Arc<Mutex<ProcessingCheck>>,
-        msg: GarlemliaMessage,
-        sender_node: Node) -> Option<GarlemliaMessage> {
+                             socket: Arc<UdpSocket>,
+                             message_handler: Arc<Box<dyn GMessage>>,
+                             routing_table: Arc<Mutex<RoutingTable>>,
+                             data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
+                             garlic: Arc<Mutex<GarlicCast>>,
+                             file_storage: Arc<Mutex<FileStorage>>,
+                             chunk_part_associations: Arc<Mutex<ChunkPartAssociations>>,
+                             check_processing: Arc<Mutex<ProcessingCheck>>,
+                             msg: GarlemliaMessage,
+                             sender_node: Node) -> Option<GarlemliaMessage> {
         let context = GarlemliaContext::new(
             socket,
             self_node,
@@ -901,7 +901,7 @@ impl GarlemliaFunctions {
                 GarlemliaFunctions::store_value(&context, data, 20).await;
             }
             // Storing File Chunk info
-            GarlemliaStoreRequest::FileChunkInfo { id , request_id, chunk_size, parts_count } => {
+            GarlemliaStoreRequest::FileChunkInfo { id, request_id, chunk_size, parts_count } => {
                 GarlemliaFunctions::handle_clove_store_chunk_info(context, data, id, request_id,
                                                                   chunk_size, parts_count).await;
             }
@@ -1030,8 +1030,8 @@ impl GarlemliaFunctions {
         match action.clone() {
             CloveMessage::SearchOverlay { request_id, proxy_id, search_term, .. } => {
                 response_data = GarlemliaFunctions::handle_clove_search_overlay(context,
-                                                                 request_id,
-                                                                 proxy_id, search_term).await;
+                                                                                request_id,
+                                                                                proxy_id, search_term).await;
             }
             CloveMessage::SearchGarlemlia { key, request_id, .. } => {
                 response_data = GarlemliaFunctions::handle_clove_search_kademlia(context,
@@ -1097,13 +1097,13 @@ impl GarlemliaFunctions {
         None
     }
 
-    async fn handle_search_file (context: &GarlemliaContext,
-                                 check_processing: Arc<Mutex<ProcessingCheck>>,
-                                 request_id: CloveRequestID,
-                                 proxy_id: U256,
-                                 search_term: String,
-                                 public_key: String,
-                                 ttl: u8) -> Option<GarlemliaMessage> {
+    async fn handle_search_file(context: &GarlemliaContext,
+                                check_processing: Arc<Mutex<ProcessingCheck>>,
+                                request_id: CloveRequestID,
+                                proxy_id: U256,
+                                search_term: String,
+                                public_key: String,
+                                ttl: u8) -> Option<GarlemliaMessage> {
         // Need to access shared memory, wait for available lock
         ProcessingCheck::wait_and_acquire(&check_processing).await;
 
@@ -1195,689 +1195,4 @@ impl GarlemliaFunctions {
 
         None
     }
-
-    /*pub async fn run_message(self_node: Node,
-                             socket: Arc<UdpSocket>,
-                             message_handler: Arc<Box<dyn GMessage>>,
-                             routing_table: Arc<Mutex<RoutingTable>>,
-                             data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
-                             garlic: Arc<Mutex<GarlicCast>>,
-                             file_storage: Arc<Mutex<FileStorage>>,
-                             chunk_part_associations: Arc<Mutex<ChunkPartAssociations>>,
-                             check_processing: Arc<Mutex<ProcessingCheck>>,
-                             msg: GarlemliaMessage,
-                             sender_node: Node) -> Option<GarlemliaMessage> {
-        match msg {
-            GarlemliaMessage::FindNode { id, .. } => {
-                let response = if id == self_node.id {
-                    // If the search target is this node itself, return only this node
-                    GarlemliaMessage::Response {
-                        nodes: vec![self_node.clone()],
-                        value: None,
-                        sender: self_node.clone(),
-                    }
-                } else {
-                    // Return the closest known nodes
-                    let closest_nodes;
-                    {
-                        closest_nodes = routing_table.lock().await.find_closest_nodes(id, DEFAULT_K).await;
-                    }
-                    GarlemliaMessage::Response {
-                        nodes: closest_nodes,
-                        value: None,
-                        sender: self_node.clone(),
-                    }
-                };
-
-                if cfg!(debug_assertions) {
-                    // println!("Responding to message with {:?}", response);
-                }
-
-                Some(response)
-            }
-
-            // Store a key-value pair
-            GarlemliaMessage::Store { key, value, .. } => {
-                let mut store_val;
-                // Check whether this node is storing validator information
-                if value.is_validator() {
-                    let current;
-                    {
-                        current = data_store.lock().await.get(&key).cloned();
-                    }
-
-                    // Check whether there are already entries for this validation session
-                    if current.is_some() {
-                        let stored_data = current.unwrap();
-                        match stored_data {
-                            GarlemliaData::Validator { id, proxy_ids, proxies } => {
-                                // Get the ID for the proxy
-                                let this_proxy_id = value.validator_get_proxy_id().unwrap();
-                                // Get the old list of IDs for the validation session
-                                let mut new_ids = proxy_ids;
-                                // Add the ID from the requester
-                                new_ids.push(this_proxy_id);
-                                // Get the old list of Proxy IP addresses
-                                let mut new_proxies = proxies;
-                                // Insert the IP address of the requester
-                                new_proxies.insert(this_proxy_id, sender_node.clone().address);
-                                // Set the validation pool to this modified version
-                                store_val = Some(GarlemliaData::Validator {
-                                    id,
-                                    proxy_ids: new_ids,
-                                    proxies: new_proxies
-                                });
-                            }
-                            _ => {
-                                // This should, in theory, never be the case
-                                store_val = None;
-                            }
-                        }
-                    } else {
-                        // This is a new validation pool request
-                        let this_proxy_id = value.validator_get_proxy_id().unwrap();
-                        let mut set_proxies = HashMap::new();
-                        set_proxies.insert(this_proxy_id, sender_node.clone().address);
-
-                        // Set the new validation pool with the requester as the only entry for the moment
-                        store_val = Some(GarlemliaData::Validator {
-                            id: key,
-                            proxy_ids: vec![this_proxy_id],
-                            proxies: set_proxies
-                        });
-                    }
-                } else {
-                    // Get the data to store from the request
-                    store_val = value.to_store_data();
-                }
-
-                // Verify that the data is actually capable of being stored
-                if store_val.is_some() {
-                    let mut check = store_val.unwrap();
-                    // Transpose the data to a form where it can more easily be stored
-                    check.store();
-
-                    store_val = Some(check);
-                }
-
-                // Check whether this is preliminary chunk data
-                if value.is_chunk_info() {
-                    // Add the chunk info to the pending list for chunk parts
-                    chunk_part_associations.lock().await.add_to_chunk_storage(value.get_file_chunk_info().unwrap());
-                } else if value.is_chunk_part() {
-                    // Lock the pending chunk part information
-                    let mut cpa = chunk_part_associations.lock().await;
-                    // Get this chunk ID
-                    let chunk_id = value.get_id();
-                    // Check to make sure we are storing the chunk
-                    if cpa.am_storing_chunk(chunk_id) {
-                        // Get mutable chunk info
-                        let chunk_info = cpa.get_mut_chunk_stored(chunk_id).unwrap();
-                        // Add this chunk part to the list of received chunk parts
-                        chunk_info.parts_info.push(value.get_chunk_part_info().unwrap());
-
-                        // Get the chunk part index
-                        let index = value.get_chunk_part_index().unwrap();
-                        // Get the actual chunk part data
-                        let chunk_part_data = value.get_chunk_part_data().unwrap();
-
-                        {
-                            // Store the chunk part on the disk for later assembly
-                            let _ = file_storage.lock().await.store_chunk_part(chunk_id, index, chunk_part_data).await;
-                        }
-
-                        // Check if received all chunk parts for this chunk
-                        if chunk_info.parts_info.len() == chunk_info.parts_count {
-                            // Assemble the whole chunk from its parts
-                            let check = file_storage.lock().await.assemble_chunk(chunk_id, chunk_info.parts_count).await;
-
-                            // Verify that the chunk was assembled properly
-                            if check.is_ok() {
-                                // Remove chunk part information from the list of pending chunks
-                                cpa.remove_from_chunk_storage(chunk_id);
-                            }
-                        }
-                    }
-
-                    store_val = None;
-                }
-
-                // This is simply a value
-                if store_val.is_some() {
-                    // Insert value to data store
-                    data_store.lock().await.insert(key, store_val.clone().unwrap());
-                }
-
-                /*match value {
-                    // Check whether we are storing FileName information
-                    GarlemliaStoreRequest::FileName { .. } => {
-                        let proxies_count;
-                        {
-                            proxies_count = garlemlia.lock().await.proxies.len();
-                        }
-
-                        if proxies_count == 0 {
-                            loop {
-                                tokio::time::sleep(Duration::from_millis(10)).await;
-                                let mut check = check_processing.lock().await;
-                                if !check.check() {
-                                    check.set(true);
-                                    break;
-                                }
-                            }
-
-                            let total_buckets = 255;
-                            for b in 0..=total_buckets {
-                                let refresh_id = RoutingTable::random_id_for_bucket(self_node.id, b);
-                                GarlemliaFunctions::iterative_find_node(Arc::clone(&socket), self_node.clone(),
-                                                                        Arc::clone(&routing_table),
-                                                                        Arc::clone(&message_handler),
-                                                                        Arc::clone(&garlemlia),
-                                                                        refresh_id).await;
-                            }
-
-                            {
-                                garlemlia.lock().await.discover_proxies(60).await;
-                            }
-
-                            {
-                                check_processing.lock().await.set(false);
-                            }
-                        }
-                    }
-                    _ => {}
-                } */
-
-                None
-            }
-
-            // Use find_closest_nodes() if value is not found
-            GarlemliaMessage::FindValue { request, .. } => {
-                // Get key for request and get entry in the data store if it exists
-                let key = request.get_id();
-                let value = data_store.lock().await.get(&key).cloned();
-
-                let mut response = None;
-
-                // Check if we have the value they are looking for
-                if value.is_some() {
-                    // We have the value, so unwrap
-                    let val = value.unwrap();
-
-                    // If the value is a file chunk
-                    if val.is_chunk() {
-                        // Get the file chunk data from storage
-                        let chunk_data = file_storage.lock().await.get_chunk(val.get_id()).await;
-
-                        // Verify that the chunk data exists
-                        if chunk_data.is_ok() {
-                            // Get the unwrapped chunk data
-                            let chunk_data_clean = chunk_data.unwrap();
-                            // Generate the appropriate chunk information response
-                            let response_info = val.get_chunk_info(chunk_data_clean.clone(), request.get_request_id().unwrap(), self_node.clone());
-
-                            // Send the chunk info only
-                            response = Some(GarlemliaMessage::Response {
-                                nodes: vec![],
-                                value: response_info,
-                                sender: self_node.clone(),
-                            });
-                        }
-                    } else {
-                        // Regular data, just generate response and send
-                        response = Some(GarlemliaMessage::Response {
-                            nodes: vec![],
-                            value: val.get_response(Some(request)),
-                            sender: self_node.clone(),
-                        });
-                    }
-                } else {
-                    // Don't have the data, find the closest nodes and send them
-                    let closest_nodes;
-                    {
-                        closest_nodes = routing_table.lock().await.find_closest_nodes(key, DEFAULT_K).await;
-                    }
-
-                    response = Some(GarlemliaMessage::Response {
-                        nodes: closest_nodes,
-                        value: None,
-                        sender: self_node.clone(),
-                    });
-                }
-
-                response
-            }
-
-            GarlemliaMessage::Garlic { msg, sender } => {
-                // Firstly, need to send an IsAlive message for some message types so that the sender knows
-                // we received the message
-                match msg {
-                    GarlicMessage::FindProxy { .. } |
-                    GarlicMessage::Forward { .. } |
-                    GarlicMessage::ProxyAgree { .. } |
-                    GarlicMessage::RefreshAlt { .. } |
-                    GarlicMessage::UpdateAlt { .. } |
-                    GarlicMessage::UpdateAltNextOrLast { .. } => {
-                        {
-                            if let Err(e) = message_handler.send_no_recv(&Arc::from(Arc::clone(&socket)), self_node.clone(), &sender_node.address, &GarlicMessage::build_send_is_alive(self_node.clone())).await {
-                                eprintln!("Failed to send IsAlive to {}: {:?}", sender_node.address, e);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-
-                // Need to get a lock on processing Garlic messages
-                ProcessingCheck::wait_and_acquire(&check_processing).await;
-
-                // Get the lock on our garlemlia handler and retrieve the message
-                let action_res;
-                {
-                    action_res = garlic.lock().await.recv(sender, msg).await;
-                }
-
-                // Get lock on our routing table and get our flat routing table
-                let send_search_nodes;
-                {
-                    send_search_nodes = routing_table.lock().await.flat_nodes().await;
-                }
-
-                let mut send_info = None;
-                // Verify that we properly received the message
-                if action_res.is_ok() {
-                    // Get message operator
-                    let action_opt = action_res.unwrap();
-                    if action_opt.is_some() {
-                        // Get actual message
-                        let action = action_opt.unwrap();
-
-                        let mut response_data = None;
-                        let context_data = GarlemliaContext::new(Arc::clone(&socket), self_node.clone(),
-                                                                 Arc::clone(&routing_table),
-                                                                 Arc::clone(&message_handler),
-                                                                 Arc::clone(&data_store),
-                                                                 Arc::clone(&garlic),
-                                                                 Arc::clone(&file_storage),
-                                                                 Arc::clone(&chunk_part_associations));
-                        match action.clone() {
-                            CloveMessage::SearchOverlay { request_id, proxy_id, search_term, .. } => {
-                                // Searching overlay, need to first generate and store validator information
-                                GarlemliaFunctions::store_value(&context_data,
-                                                                GarlemliaStoreRequest::Validator { id: request_id.request_id, proxy_id },
-                                                                3).await;
-
-                                sleep(Duration::from_millis(100)).await;
-
-                                // Send a search for a file
-                                response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
-                            }
-                            CloveMessage::SearchGarlemlia { key, request_id, .. } => {
-                                // Wanting to find a key, so iterative find value
-                                response_data = GarlemliaFunctions::iterative_find_value(&context_data,
-                                                                                         GarlemliaFindRequest::Key { id: key, request_id: request_id.request_id }).await;
-
-                                // Check response
-                                if response_data.is_some() {
-                                    // Got data from request
-                                    let data = response_data.clone().unwrap();
-                                    match data.clone() {
-                                        // Check if the response has file chunk info
-                                        GarlemliaResponse::FileChunkInfo { sender, .. } => {
-                                            // Don't have all file chunk info
-                                            let mut send_and_process = false;
-                                            {
-                                                // Lock pending chunk info
-                                                let mut cpa = chunk_part_associations.lock().await;
-                                                // Check whether we already have the chunk info
-                                                if !cpa.already_has.contains_key(&data.get_chunk_id().unwrap()) {
-                                                    // Add the chunk info to the list
-                                                    cpa.add_to_chunk_proxy(data.get_proxy_file_chunk_info().unwrap());
-                                                    // Associate chunk ID with request ID
-                                                    cpa.already_has.insert(data.get_chunk_id().unwrap(), data.get_request_id().unwrap());
-                                                    send_and_process = true;
-                                                }
-                                            }
-
-                                            // Check whether to forward chunk info
-                                            if send_and_process {
-                                                {
-                                                    // Forward chunk info
-                                                    garlic.lock().await.send_chunk_part(data.get_request_id().unwrap(), data, false).await;
-                                                }
-
-                                                // Prepare the message to request chunk parts
-                                                let download_chunk_msg = GarlemliaMessage::DownloadFileChunk {
-                                                    sender: self_node.clone(),
-                                                    request: GarlemliaFindRequest::Key { id: key, request_id: request_id.request_id }
-                                                };
-
-                                                {
-                                                    // Send the message to request chunk parts
-                                                    if let Err(e) = message_handler.send_no_recv(&Arc::from(Arc::clone(&socket)), self_node.clone(), &sender.address, &download_chunk_msg).await {
-                                                        eprintln!("Failed to send IsAlive to {}: {:?}", sender.address, e);
-                                                    }
-                                                }
-                                            }
-
-                                            response_data = None;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            CloveMessage::ResponseWithValidator { request_id, proxy_id, .. } => {
-                                // Get forward proxy
-                                response_data = GarlemliaFunctions::iterative_find_value(&context_data,
-                                                                                         GarlemliaFindRequest::Validator { id: request_id.request_id, proxy_id }).await;
-                            }
-                            // Storing Garlic info
-                            CloveMessage::Store { data, .. } => {
-                                match data.clone() {
-                                    // Storing File Name information
-                                    GarlemliaStoreRequest::FileName { .. } => {
-                                        GarlemliaFunctions::store_value(&context_data, data, 20).await;
-                                    }
-                                    // Storing File Chunk info
-                                    GarlemliaStoreRequest::FileChunkInfo { id , request_id, chunk_size, parts_count } => {
-                                        let mut send_and_process = false;
-                                        {
-                                            let mut cpa = chunk_part_associations.lock().await;
-                                            // Check whether we already sent this info
-                                            if !cpa.already_has.contains_key(&id) {
-                                                // Extrapolate pertinent information
-                                                let proxy_chunk_info = ProxyFileChunkInfo {
-                                                    request_id,
-                                                    chunk_id: id,
-                                                    chunk_size,
-                                                    parts_count,
-                                                    parts_info: vec![],
-                                                };
-                                                // Add the chunk info to the temporary list
-                                                cpa.add_to_chunk_proxy(proxy_chunk_info);
-                                                // Add this to our list of already having
-                                                cpa.already_has.insert(id, request_id);
-                                                send_and_process = true;
-                                            }
-                                        }
-
-                                        // Send the store request for the chunk info
-                                        if send_and_process {
-                                            GarlemliaFunctions::store_value(&context_data, data, 2).await;
-                                        }
-                                    }
-                                    // Storing a file chunk part
-                                    GarlemliaStoreRequest::FileChunkPart { id, index, part_size, data } => {
-                                        let mut cpa = chunk_part_associations.lock().await;
-                                        // Verify whether this is actually a file chunk part that we are missing
-                                        if cpa.am_proxy_for_chunk(id) {
-                                            let proxy_chunk_part = ProxyChunkPartInfo {
-                                                index,
-                                                size: part_size,
-                                                data
-                                            };
-
-                                            // Get the file chunk info and add the chunk part information
-                                            let proxy_chunk_info = cpa.get_mut_chunk_proxy(id).unwrap();
-                                            proxy_chunk_info.parts_info.push(proxy_chunk_part);
-
-                                            // If we have all the chunk parts
-                                            if proxy_chunk_info.parts_info.len() == proxy_chunk_info.parts_count {
-                                                // Get all chunk parts
-                                                let parts_data = proxy_chunk_info.parts_info.clone();
-
-                                                // Loop through all chunk parts
-                                                for i in 0..parts_data.len() {
-                                                    let mut remove_me = false;
-                                                    // Check if this is the last part
-                                                    if i == parts_data.len() - 1 {
-                                                        // If so, then set the flag for removing at the end
-                                                        remove_me = true;
-                                                    }
-
-                                                    // Generate appropriate request
-                                                    let send_store_req = GarlemliaStoreRequest::FileChunkPart {
-                                                        id,
-                                                        index: parts_data[i].index,
-                                                        part_size: parts_data[i].size,
-                                                        data: parts_data[i].clone().data
-                                                    };
-
-                                                    // Send store request for chunk part
-                                                    GarlemliaFunctions::store_value(&context_data, send_store_req, 2).await;
-
-                                                    // Remove chunk info from the list if all parts sent
-                                                    if remove_me {
-                                                        cpa.remove_from_chunk_proxy(id);
-                                                        cpa.already_has.remove(&id);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => {
-                                        GarlemliaFunctions::store_value(&context_data, data, 2).await;
-                                    }
-                                }
-                            }
-                            // FileChunkPart message
-                            CloveMessage::FileChunkPart { data, .. } => {
-                                match data {
-                                    // Verify that this is actually a chunk part
-                                    GarlemliaResponse::ChunkPart { .. } => {
-                                        let mut cpa = chunk_part_associations.lock().await;
-                                        // Get the overall chunk ID
-                                        let chunk_id = data.get_chunk_id().unwrap();
-                                        // Verify that we are a proxy for the chunk part
-                                        if cpa.am_proxy_for_chunk(chunk_id) {
-                                            // Add the chunk part to the pending list of chunk parts
-                                            let proxy_chunk_info = cpa.get_mut_chunk_proxy(chunk_id).unwrap();
-                                            proxy_chunk_info.parts_info.push(data.get_proxy_chunk_part_info().unwrap());
-
-                                            // Check if we have all chunk parts
-                                            if proxy_chunk_info.parts_info.len() == proxy_chunk_info.parts_count {
-                                                // Get all chunk parts
-                                                let parts_data = proxy_chunk_info.parts_info.clone();
-
-                                                // Loop through chunk parts
-                                                for i in 0..parts_data.len() {
-                                                    let mut remove_me = false;
-                                                    // Check if this is the final chunk part
-                                                    if i == parts_data.len() - 1 {
-                                                        // Final chunk part, set the flag to remove
-                                                        remove_me = true;
-                                                    }
-
-                                                    // Generate the message for sending this chunk part
-                                                    let response = GarlemliaResponse::ChunkPart {
-                                                        request_id: data.get_request_id().unwrap(),
-                                                        chunk_id,
-                                                        part_size: parts_data[i].size,
-                                                        index: parts_data[i].index,
-                                                        data: parts_data[i].clone().data
-                                                    };
-
-                                                    {
-                                                        // Actually send this chunk part
-                                                        garlic.lock().await.send_chunk_part(data.get_request_id().unwrap(), response, remove_me).await;
-                                                    }
-
-                                                    // Remove chunk information from the pending list if
-                                                    // all parts sent
-                                                    if remove_me {
-                                                        cpa.remove_from_chunk_proxy(chunk_id);
-                                                        cpa.already_has.remove(&chunk_id);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            // Garlic Cast responses
-                            CloveMessage::Response { data, .. } => {
-                                match data {
-                                    // Initiator receiving chunk parts
-                                    GarlemliaResponse::ChunkPart { .. } => {
-                                        // Lock pending chunks
-                                        let mut cpa = chunk_part_associations.lock().await;
-                                        // Set Chunk ID info
-                                        let chunk_id = data.get_chunk_id().unwrap();
-                                        // Check if this is already registered as a pending chunk
-                                        if cpa.am_downloading_chunk(chunk_id) {
-                                            // Add the chunk part to the pending chunk part list
-                                            let temp_chunk_info = cpa.get_mut_chunk_downloading(chunk_id).unwrap();
-                                            temp_chunk_info.parts_info.push(data.get_chunk_part_info().unwrap());
-
-                                            // Get the chunk part index
-                                            let index = data.get_chunk_part_index().unwrap();
-                                            let chunk_part_data = data.get_chunk_part_data().unwrap();
-
-                                            {
-                                                // Store the chunk part on the disk
-                                                let _ = file_storage.lock().await.store_temp_chunk_part(chunk_id, index, chunk_part_data).await;
-                                            }
-
-                                            // Check if we already have all the chunk parts
-                                            if temp_chunk_info.parts_info.len() == temp_chunk_info.parts_count {
-                                                // Assemble the entire chunk from parts
-                                                let _ = file_storage.lock().await.assemble_temp_chunk(chunk_id, temp_chunk_info.parts_count).await;
-
-                                                {
-                                                    // Set the chunk flag to downloaded
-                                                    garlic.lock().await.file_chunk_downloaded(data.get_request_id().unwrap(), chunk_id, sender_node).await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // Receiving file chunk info as initiator
-                                    GarlemliaResponse::FileChunkInfo { .. } => {
-                                        // Lock pending chunk parts info
-                                        let mut cpa = chunk_part_associations.lock().await;
-                                        // Check if the chunk info has already been set to pending
-                                        if !cpa.already_has.contains_key(&data.get_chunk_id().unwrap()) {
-                                            // Add the chunk info to pending
-                                            cpa.add_to_chunk_downloads(data.get_file_chunk_info().unwrap());
-                                            cpa.already_has.insert(data.get_chunk_id().unwrap(), data.get_request_id().unwrap());
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
-                        }
-
-                        {
-                            // Forwarding on to proxy
-                            send_info = garlic.lock().await.run_proxy_message(action, response_data).await;
-                        }
-                    }
-                }
-
-                {
-                    // No longer processing, we can release the mutex lock for another thread
-                    check_processing.lock().await.set(false);
-                }
-
-                // Check if we have a pending search to commit
-                if send_info.is_some() {
-                    // Send pending search
-                    GarlicCast::send_search(Arc::clone(&socket), self_node, Arc::clone(&message_handler), send_search_nodes, send_info.unwrap()).await;
-                }
-
-                None
-            }
-
-            // Searching for a file
-            GarlemliaMessage::SearchFile { request_id, proxy_id, search_term, public_key, ttl, .. } => {
-                // Need to access shared memory, wait for available lock
-                ProcessingCheck::wait_and_acquire(&check_processing).await;
-
-                let already_checked;
-                {
-                    // Check if this is a search that we have already done
-                    let mut garlic_locked = garlic.lock().await;
-                    already_checked = garlic_locked.has_search_checked(request_id.clone());
-
-                    // If we haven't already done the search
-                    if !already_checked {
-                        // Set this to having been searched
-                        garlic_locked.check_search(request_id.clone());
-                    }
-                }
-
-                // Get the flat routing table
-                let send_search_nodes;
-                {
-                    send_search_nodes = routing_table.lock().await.flat_nodes().await;
-                }
-
-                let mut send_info = None;
-                // See if we have already checked for this file / forwarded request
-                if !already_checked {
-                    // Search for this file in our storage
-                    let response_data = GarlemliaFunctions::search_file(Arc::clone(&data_store), search_term.clone()).await;
-
-                    // Forward search message
-                    let new_clove_msg = CloveMessage::SearchOverlay { request_id, proxy_id, search_term, public_key, ttl };
-
-                    {
-                        // Get forward search info
-                        send_info = garlic.lock().await.run_proxy_message(new_clove_msg, response_data).await;
-                    }
-                }
-
-                {
-                    // Stop the lock on shared data
-                    check_processing.lock().await.set(false);
-                }
-
-                // Check if we are forwarding
-                if send_info.is_some() {
-                    // Forward search
-                    GarlicCast::send_search(Arc::clone(&socket), self_node, Arc::clone(&message_handler), send_search_nodes, send_info.unwrap()).await;
-                }
-
-                None
-            }
-
-            // Request for file chunk
-            GarlemliaMessage::DownloadFileChunk { request, .. } => {
-                // Get key / value for the request
-                let key = request.get_id();
-                let value = data_store.lock().await.get(&key).cloned();
-                // Check if we have the value
-                if value.is_some() {
-                    let val = value.unwrap();
-
-                    // Check if this really is chunk data
-                    if val.is_chunk() {
-                        // Get all the chunk data from the stored file
-                        let chunk_data = file_storage.lock().await.get_chunk(val.get_id()).await;
-
-                        if chunk_data.is_ok() {
-                            let chunk_data_clean = chunk_data.unwrap();
-                            // Generate a set of responses including the chunk info and chunk part messages
-                            let response_data = val.get_chunk_responses(chunk_data_clean.clone(), request.get_request_id().unwrap()).unwrap();
-
-                            // Actually send the chunk info and parts
-                            GarlemliaFunctions::send_chunk_parts(Arc::clone(&socket), self_node.clone(),
-                                                                 Arc::clone(&message_handler),
-                                                                 CloveRequestID::new(request.get_request_id().unwrap(), rand::random::<u64>()),
-                                                                 response_data,
-                                                                 sender_node.address).await;
-                        }
-                    }
-                } else {
-                    println!("COULD NOT FIND DESIGNATED FILE CHUNK!");
-                }
-
-                None
-            }
-
-            _ => {
-                None
-            }
-        }
-    }*/
 }
