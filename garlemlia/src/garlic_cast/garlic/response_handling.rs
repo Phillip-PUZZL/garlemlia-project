@@ -10,7 +10,7 @@ pub(crate) trait ResponseHandling {
     fn get_download_responses(&self) -> HashMap<U256, Vec<GarlemliaResponse>>;
     fn get_file_info_responses(&self) -> HashMap<U256, Vec<GarlemliaResponse>>;
     fn get_search_responses(&self) -> Vec<FileInfo>;
-    async fn file_chunk_downloaded(&mut self, request_id: U256, chunk_id: U256, sender: Node);
+    async fn file_chunk_downloaded(&mut self, request_id: U256, chunk_id: U256, sender: &Node);
 }
 
 impl ResponseHandling for GarlicCast {
@@ -264,7 +264,7 @@ impl ResponseHandling for GarlicCast {
     /// # Potential Enhancements
     /// - Add error handling/logging if `request_id` is not found in the `requests_as_initiator` map.
     /// - Populate the `chunk_size` and `parts_count` fields with appropriate chunk-specific information.
-    async fn file_chunk_downloaded(&mut self, request_id: U256, chunk_id: U256, sender: Node) {
+    async fn file_chunk_downloaded(&mut self, request_id: U256, chunk_id: U256, sender: &Node) {
         let request_info = self.requests_as_initiator.get_mut(&request_id);
 
         if request_info.is_some() {
@@ -277,7 +277,7 @@ impl ResponseHandling for GarlicCast {
                     chunk_id,
                     chunk_size: 0,
                     parts_count: 0,
-                    sender
+                    sender: sender.clone()
                 }
             });
         }

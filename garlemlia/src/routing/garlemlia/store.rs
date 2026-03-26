@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use crate::garlemlia::garlemlia::functions::GarlemliaContext;
+use crate::routing::garlemlia::functions::GarlemliaContext;
 use crate::structs::garlemlia_message::GarlemliaStoreRequest;
 use crate::structs::node::Node;
 use super::{Garlemlia, GarlemliaFunctions};

@@ -10,9 +10,9 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex};
 use tokio::task;
 
-use garlic_cast::GarlicCast;
+use garlic::GarlicCast;
 
-use crate::garlic_cast::garlic_cast;
+use crate::garlic_cast::garlic;
 use crate::file_utils::garlemlia_files::FileStorage;
 use crate::structs::constants::{SOCKET_DATA_MAX};
 use crate::structs::file_chunks::{ChunkPartAssociations, ProcessingCheck};
@@ -31,6 +31,21 @@ use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use crate::helper_functions::helper_functions::u256_random;
 use crate::structs::settings::{load_settings_file, new_settings, Settings};
+
+#[derive(Clone)]
+struct StartContext {
+    node: Arc<Mutex<Node>>,
+    socket: Arc<UdpSocket>,
+    message_handler: Arc<Box<dyn GMessage>>,
+    routing_table: Arc<Mutex<RoutingTable>>,
+    data_store: Arc<Mutex<HashMap<U256, GarlemliaData>>>,
+    garlic: Arc<Mutex<GarlicCast>>,
+    file_storage: Arc<Mutex<FileStorage>>,
+    chunk_part_associations: Arc<Mutex<ChunkPartAssociations>>,
+    check_processing: Arc<Mutex<ProcessingCheck>>,
+    stop_signal: Arc<AtomicBool>,
+    settings: Arc<Mutex<Settings>>,
+}
 
 // Kademlia Struct
 #[derive(Clone)]
@@ -165,7 +180,7 @@ impl Garlemlia {
     }
 
     pub async fn load(settings_path: String) -> Self {
-        let mut settings = load_settings_file(settings_path).await.unwrap();
+        let settings = load_settings_file(settings_path).await.unwrap();
 
         let tracker = load_tracker_file(settings.get_application_settings().get_tracker_file_path()).await.unwrap();
 
@@ -362,104 +377,137 @@ impl Garlemlia {
 
     // Start listening for messages
     pub async fn start(&mut self, orig_socket: Arc<UdpSocket>) {
-        let self_node = Arc::clone(&self.node);
-        let socket = Arc::clone(&orig_socket);
-        let message_handler = Arc::clone(&self.message_handler);
-        let routing_table = Arc::clone(&self.routing_table);
-        let data_store = Arc::clone(&self.data_store);
-        let garlic = Arc::clone(&self.garlic);
-        let file_storage = Arc::clone(&self.file_storage);
-        let chunk_part_associations = Arc::clone(&self.chunk_part_associations);
-        let check_processing = Arc::clone(&self.is_processing);
-        let stop_clone = Arc::clone(&self.stop_signal);
-        let mut settings = Arc::clone(&self.settings);
-        println!("STARTING {}", socket.local_addr().unwrap());
+        let ctx = StartContext {
+            node: Arc::clone(&self.node),
+            socket: Arc::clone(&orig_socket),
+            message_handler: Arc::clone(&self.message_handler),
+            routing_table: Arc::clone(&self.routing_table),
+            data_store: Arc::clone(&self.data_store),
+            garlic: Arc::clone(&self.garlic),
+            file_storage: Arc::clone(&self.file_storage),
+            chunk_part_associations: Arc::clone(&self.chunk_part_associations),
+            check_processing: Arc::clone(&self.is_processing),
+            stop_signal: Arc::clone(&self.stop_signal),
+            settings: Arc::clone(&self.settings),
+        };
 
-        // Main event loop - listen for messages
+        println!("STARTING {}", ctx.socket.local_addr().unwrap());
+
         let handle = tokio::spawn(async move {
-            let mut buf = [0; SOCKET_DATA_MAX];
-            while !stop_clone.load(Ordering::Relaxed) {
-                // Receive socket data
-                if let Ok((size, src)) = socket.recv_from(&mut buf).await {
-                    let self_ref;
-                    {
-                        self_ref = self_node.lock().await.clone();
-                    }
-                    // Get message content from the JSON data
-                    let msg: GarlemliaMessage = serde_json::from_slice(&buf[..size]).unwrap();
-
-                    //println!("{} received {:?}", socket.local_addr().unwrap(), msg);
-
-                    // Extract sender Node info
-                    let sender_node = Node {
-                        id: msg.sender_id(),
-                        address: src,
-                    };
-
-                    if cfg!(debug_assertions) {
-                        println!("Received msg {:?} from {:?} to {:?}", msg, sender_node, self_ref);
-                    }
-
-                    // Check if it is a stop message sent from self
-                    match msg {
-                        GarlemliaMessage::Stop {} => {
-                            if sender_node.address == self_ref.address {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    let self_node_clone = self_node.lock().await.clone();
-                    let socket_clone = Arc::clone(&socket);
-                    let message_handler_clone = Arc::clone(&message_handler);
-                    let routing_table_clone = Arc::clone(&routing_table);
-                    let data_store_clone = Arc::clone(&data_store);
-                    let garlic_clone = Arc::clone(&garlic);
-                    let file_storage_clone = Arc::clone(&file_storage);
-                    let chunk_part_associations_clone = Arc::clone(&chunk_part_associations);
-                    let check_processing_clone = Arc::clone(&check_processing);
-
-                    // Spawn a new thread and process the message within that thread
-                    // TODO: Setup maximum processing threads
-                    tokio::spawn(async move {
-                        Garlemlia::process_message(self_node_clone,
-                                                   socket_clone,
-                                                   message_handler_clone,
-                                                   routing_table_clone,
-                                                   data_store_clone,
-                                                   garlic_clone,
-                                                   file_storage_clone,
-                                                   chunk_part_associations_clone,
-                                                   check_processing_clone,
-                                                   msg,
-                                                   sender_node,
-                                                   src).await;
-                    });
-
-                    {
-                        let rt = routing_table.lock().await;
-                        let mut settings_locked = settings.lock().await;
-
-                        let mut old_nodes = settings_locked.get_network_settings().get_known_nodes();
-                        old_nodes.sort_by_key(|n| n.id);
-
-                        let mut new_nodes = rt.flat_nodes().await;
-                        new_nodes.sort_by_key(|n| n.id);
-
-                        if old_nodes != new_nodes {
-                            settings_locked.get_network_settings_mut().set_known_nodes(new_nodes);
-                            if let Err(e) = settings_locked.save_settings().await {
-                                eprintln!("Failed to save settings: {: }", e);
-                            }
-                        }
-                    }
-                }
-            }
-            println!("FINISHED {}", socket.local_addr().unwrap());
-            drop(socket);
+            Garlemlia::run_event_loop(ctx).await;
         });
+
         *Arc::get_mut(&mut self.join_handle).unwrap() = Some(handle);
+    }
+
+    async fn run_event_loop(ctx: StartContext) {
+        let mut buf = [0; SOCKET_DATA_MAX];
+
+        while !ctx.stop_signal.load(Ordering::Relaxed) {
+            let Ok((size, src)) = ctx.socket.recv_from(&mut buf).await else {
+                continue;
+            };
+
+            if let Err(e) = Garlemlia::handle_incoming_packet(&ctx, &buf[..size], src).await {
+                eprintln!("Failed to handle packet from {}: {}", src, e);
+            }
+        }
+
+        println!("FINISHED {}", ctx.socket.local_addr().unwrap());
+    }
+
+    async fn handle_incoming_packet(
+        ctx: &StartContext,
+        data: &[u8],
+        src: SocketAddr,
+    ) -> Result<(), String> {
+        let self_ref = ctx.node.lock().await.clone();
+
+        let msg: GarlemliaMessage =
+            serde_json::from_slice(data).map_err(|e| format!("Invalid message JSON: {e}"))?;
+
+        let sender_node = Node {
+            id: msg.sender_id(),
+            address: src,
+        };
+
+        if cfg!(debug_assertions) {
+            println!("Received msg {:?} from {:?} to {:?}", msg, sender_node, self_ref);
+        }
+
+        if Garlemlia::is_self_stop_message(&msg, &sender_node, &self_ref) {
+            ctx.stop_signal.store(true, Ordering::Relaxed);
+            return Ok(());
+        }
+
+        Garlemlia::spawn_message_processor(ctx, msg, sender_node, src);
+        Garlemlia::sync_known_nodes(&ctx.routing_table, &ctx.settings).await;
+
+        Ok(())
+    }
+
+    fn is_self_stop_message(msg: &GarlemliaMessage, sender_node: &Node, self_ref: &Node) -> bool {
+        matches!(msg, GarlemliaMessage::Stop {} if sender_node.address == self_ref.address)
+    }
+
+    fn spawn_message_processor(
+        ctx: &StartContext,
+        msg: GarlemliaMessage,
+        sender_node: Node,
+        src: SocketAddr,
+    ) {
+        let node = Arc::clone(&ctx.node);
+        let socket = Arc::clone(&ctx.socket);
+        let message_handler = Arc::clone(&ctx.message_handler);
+        let routing_table = Arc::clone(&ctx.routing_table);
+        let data_store = Arc::clone(&ctx.data_store);
+        let garlic = Arc::clone(&ctx.garlic);
+        let file_storage = Arc::clone(&ctx.file_storage);
+        let chunk_part_associations = Arc::clone(&ctx.chunk_part_associations);
+        let check_processing = Arc::clone(&ctx.check_processing);
+
+        tokio::spawn(async move {
+            let self_node = node.lock().await.clone();
+
+            Garlemlia::process_message(
+                self_node,
+                socket,
+                message_handler,
+                routing_table,
+                data_store,
+                garlic,
+                file_storage,
+                chunk_part_associations,
+                check_processing,
+                msg,
+                sender_node,
+                src,
+            ).await;
+        });
+    }
+
+    async fn sync_known_nodes(
+        routing_table: &Arc<Mutex<RoutingTable>>,
+        settings: &Arc<Mutex<Settings>>,
+    ) {
+        let rt = routing_table.lock().await;
+        let mut settings_locked = settings.lock().await;
+
+        let mut old_nodes = settings_locked.get_network_settings().get_known_nodes();
+        old_nodes.sort_by_key(|n| n.id);
+
+        let mut new_nodes = rt.flat_nodes().await;
+        new_nodes.sort_by_key(|n| n.id);
+
+        if old_nodes != new_nodes {
+            settings_locked
+                .get_network_settings_mut()
+                .set_known_nodes(new_nodes);
+
+            if let Err(e) = settings_locked.save_settings().await {
+                eprintln!("Failed to save settings: {}", e);
+            }
+        }
     }
 
     /// Function for sending the stop command to the main event loop

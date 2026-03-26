@@ -109,9 +109,10 @@ impl FileInfo {
     }
 
     pub async fn assemble(&self, chunk_files_path: Box<Path>) -> Result<String, (u8, String)> {
-        if self.needed_chunks.len() > 0 {
+        if !self.needed_chunks.is_empty() {
             return Err((0, "Do not have all file chunks".to_string()));
         }
+
         if self.downloaded_chunks.len() != self.all_chunks.len() {
             return Err((1, "Downloaded chunks count is not equivalent to all chunks listed".to_string()));
         }
@@ -119,123 +120,85 @@ impl FileInfo {
         let mut chunks_ordered = self.all_chunks.clone();
         chunks_ordered.sort_by_key(|c| c.index);
 
-        let encrypted_file_location;
-        if self.file_type != "" {
-            encrypted_file_location = format!("{}/{}.{}.enc", chunk_files_path.to_str().unwrap(), self.name, self.file_type);
+        let encrypted_file_location = if self.file_type.is_empty() {
+            format!("{}/{}.enc", chunk_files_path.to_str().unwrap(), self.name)
         } else {
-            encrypted_file_location = format!("{}/{}.enc", chunk_files_path.to_str().unwrap(), self.name);
-        }
+            format!(
+                "{}/{}.{}.enc",
+                chunk_files_path.to_str().unwrap(),
+                self.name,
+                self.file_type
+            )
+        };
 
         let encrypted_file_path = Path::new(&encrypted_file_location);
         if encrypted_file_path.exists() {
             return Err((2, format!("File at {} already exists", encrypted_file_location)));
         }
 
-        let mut encrypted_file = File::create(encrypted_file_path).await.unwrap();
-        for chunk in chunks_ordered.clone() {
-            let chunk_file_name = hex::encode(chunk.chunk_id.to_big_endian());
+        let mut encrypted_file = File::create(encrypted_file_path)
+            .await
+            .map_err(|_| (5, format!("Could not create file {}", encrypted_file_location)))?;
 
+        for chunk in &chunks_ordered {
+            let chunk_file_name = hex::encode(chunk.chunk_id.to_big_endian());
             let chunk_file_location = format!("{}/{}", chunk_files_path.to_str().unwrap(), chunk_file_name);
-            let chunk_file_res = File::open(chunk_file_location.clone()).await;
-            if chunk_file_res.is_err() {
-                return Err((3, format!("Could not find chunk with ID {}", chunk_file_name)));
-            }
-            let mut chunk_file = chunk_file_res.unwrap();
+
+            let mut chunk_file = File::open(&chunk_file_location)
+                .await
+                .map_err(|_| (3, format!("Could not find chunk with ID {}", chunk_file_name)))?;
 
             let mut chunk_data = Vec::new();
-            let chunk_file_read = chunk_file.read_to_end(&mut chunk_data).await;
+            chunk_file
+                .read_to_end(&mut chunk_data)
+                .await
+                .map_err(|_| (4, format!("Could not read chunk data from file {}", chunk_file_location)))?;
 
-            if chunk_file_read.is_err() {
-                return Err((4, format!("Could not read chunk data from file {}", chunk_file_location)));
-            }
-
-            let enc_file_write = encrypted_file.write_all(&chunk_data).await;
-
-            if enc_file_write.is_err() {
-                return Err((5, format!("Could not write to file {}", encrypted_file_location)));
-            }
+            encrypted_file
+                .write_all(&chunk_data)
+                .await
+                .map_err(|_| (5, format!("Could not write to file {}", encrypted_file_location)))?;
         }
 
-        for chunk in chunks_ordered {
+        for chunk in &chunks_ordered {
             let chunk_file_name = hex::encode(chunk.chunk_id.to_big_endian());
-
             let chunk_file_location = format!("{}/{}", chunk_files_path.to_str().unwrap(), chunk_file_name);
 
-            let chunk_delete = fs::remove_file(chunk_file_location.clone()).await;
-
-            if chunk_delete.is_err() {
-                return Err((6, format!("Could not delete chunk file {}", chunk_file_location)));
-            }
+            fs::remove_file(&chunk_file_location)
+                .await
+                .map_err(|_| (6, format!("Could not delete chunk file {}", chunk_file_location)))?;
         }
 
         Ok(encrypted_file_location)
     }
 
     pub async fn decrypt(&self, encrypted_file_path: Box<Path>, output_folder: Box<Path>) -> Result<String, (u8, String)> {
-        let file_id;
-        let enc_file_id;
-        let decryption_key;
-        match self.file_id {
-            Some(self_file_id) => {
-                file_id = self_file_id;
-            }
-            _ => {
-                return Err((0, "No file id found".to_string()));
-            }
-        }
-        match self.enc_file_id {
-            Some(self_enc_file_id) => {
-                enc_file_id = self_enc_file_id;
-            }
-            _ => {
-                return Err((1, "No encrypted file id found".to_string()));
-            }
-        }
-        match self.decryption_key.clone() {
-            Some(self_decryption_key) => {
-                decryption_key = self_decryption_key;
-            }
-            _ => {
-                return Err((2, "No decryption key found".to_string()));
-            }
-        }
+        let file_id = self.file_id.ok_or((0, "No file id found".to_string()))?;
+        let enc_file_id = self.enc_file_id.ok_or((1, "No encrypted file id found".to_string()))?;
+        let decryption_key = self.decryption_key.clone().ok_or((2, "No decryption key found".to_string()))?;
 
-        let file_location;
-        if self.file_type != "" {
-            file_location = format!("{}/{}.{}", output_folder.to_str().unwrap(), self.name, self.file_type);
+        let file_location = if self.file_type.is_empty() {
+            format!("{}/{}", output_folder.to_str().unwrap(), self.name)
         } else {
-            file_location = format!("{}/{}", output_folder.to_str().unwrap(), self.name);
-        }
+            format!("{}/{}.{}", output_folder.to_str().unwrap(), self.name, self.file_type)
+        };
 
-        let encrypted_file_res = File::open(encrypted_file_path.clone()).await;
-
-        let mut encrypted_file;
-        match encrypted_file_res {
-            Ok(enc_file) => {
-                encrypted_file = enc_file;
-            }
-            Err(_) => {
-                return Err((3, "Failed to open encrypted file".to_string()))
-            }
-        }
+        let mut encrypted_file = File::open(encrypted_file_path.clone())
+            .await
+            .map_err(|_| (3, "Failed to open encrypted file".to_string()))?;
 
         let mut encrypted_data = Vec::new();
-        let read_res = encrypted_file.read_to_end(&mut encrypted_data).await;
-
-        match read_res {
-            Ok(_) => {}
-            Err(_) => {
-                return Err((4, "Failed to read encrypted file".to_string()));
-            }
-        }
+        encrypted_file
+            .read_to_end(&mut encrypted_data)
+            .await
+            .map_err(|_| (4, "Failed to read encrypted file".to_string()))?;
 
         {
             let mut hasher = Sha256::new();
             hasher.update(&encrypted_data);
             let hash = hasher.finalize();
-            let actual_enc_file_id = U256::from_big_endian(&hash);
 
-            if actual_enc_file_id != enc_file_id {
+            if U256::from_big_endian(&hash) != enc_file_id {
                 return Err((5, "Encrypted file hash mismatch".to_string()));
             }
         }
@@ -247,17 +210,8 @@ impl FileInfo {
         let nonce_bytes = &encrypted_data[..12];
         let ciphertext = &encrypted_data[12..];
 
-        let key_bytes_res = hex::decode(&decryption_key);
-
-        let key_bytes;
-        match key_bytes_res {
-            Ok(bytes) => {
-                key_bytes = bytes;
-            }
-            _ => {
-                return Err((7, "Invalid decryption key (hex decode failed)".to_string()));
-            }
-        }
+        let key_bytes = hex::decode(&decryption_key)
+            .map_err(|_| (7, "Invalid decryption key (hex decode failed)".to_string()))?;
 
         if key_bytes.len() != 32 {
             return Err((8, "Decryption key is not 32 bytes".to_string()));
@@ -265,55 +219,39 @@ impl FileInfo {
 
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
         let cipher = Aes256Gcm::new(key);
-
         let nonce = Nonce::from_slice(nonce_bytes);
-        let plaintext_res = cipher.decrypt(nonce, ciphertext);
 
-        let plaintext;
-        match plaintext_res {
-            Ok(plaintext_data) => {
-                plaintext = plaintext_data;
-            }
-            Err(_) => {
-                return Err((9, "Failed to decrypt file".to_string()));
-            }
-        }
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| (9, "Failed to decrypt file".to_string()))?;
 
         {
             let mut hasher = Sha256::new();
             hasher.update(&plaintext);
             let hash = hasher.finalize();
-            let actual_file_id = U256::from_big_endian(&hash);
 
-            if actual_file_id != file_id {
+            if U256::from_big_endian(&hash) != file_id {
                 return Err((10, "Decrypted file hash mismatch".to_string()));
             }
         }
 
-        {
-            let out_res = File::create(&file_location).await;
+        let mut out = File::create(&file_location)
+            .await
+            .map_err(|_| (11, "Failed to create output file".to_string()))?;
 
-            let mut out;
-            match out_res {
-                Ok(file_thingy) => {
-                    out = file_thingy;
-                }
-                Err(_) => {
-                    return Err((11, "Failed to create output file".to_string()));
-                }
-            }
-            let write_res = out.write_all(&plaintext).await;
+        out.write_all(&plaintext)
+            .await
+            .map_err(|_| (12, "Failed to write decrypted file".to_string()))?;
 
-            if write_res.is_err() {
-                return Err((12, "Failed to write decrypted file".to_string()));
-            }
-        }
-
-        let enc_file_delete = fs::remove_file(encrypted_file_path.clone()).await;
-
-        if enc_file_delete.is_err() {
-            return Err((13, format!("Could not delete encrypted file {}", encrypted_file_path.to_str().unwrap())));
-        }
+        fs::remove_file(encrypted_file_path.clone()).await.map_err(|_| {
+            (
+                13,
+                format!(
+                    "Could not delete encrypted file {}",
+                    encrypted_file_path.to_str().unwrap()
+                ),
+            )
+        })?;
 
         Ok(file_location)
     }

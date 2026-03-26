@@ -5,7 +5,7 @@ use chrono::Utc;
 use primitive_types::U256;
 use rsa::pkcs8::EncodePublicKey;
 use tokio::task::JoinHandle;
-use crate::garlic_cast::garlic_cast::clove_operations::CloveOperations;
+use crate::garlic_cast::garlic::clove_operations::CloveOperations;
 use crate::helper_functions::helper_functions::u256_random;
 use crate::structs::constants::{MIN_PROXY_COUNT, PROXY_REQUEST_MESSAGE, PROXY_RESPONSE_TIMEOUT_MS};
 use crate::structs::garlic_message::{Clove, CloveMessage, CloveNode, GarlicMessage};
@@ -259,7 +259,7 @@ impl ProxyManagement for GarlicCast {
     /// This function removes a `Proxy` instance from the `proxies` and `initiators` collections
     /// based on its `sequence_number`. After removal from these collections, it also ensures
     /// the proxy is removed from associated requests and initiator requests by calling the
-    /// respective helper functions.
+    /// respective helper garlemlia.
     ///
     /// # Parameters
     /// - `proxy`: A reference to the `Proxy` instance that needs to be removed.
@@ -291,7 +291,7 @@ impl ProxyManagement for GarlicCast {
     ///   should be implemented to handle cleanup of any related data.
     ///
     /// # Panics
-    /// This function does not explicitly panic. However, ensure that the related helper functions
+    /// This function does not explicitly panic. However, ensure that the related helper garlemlia
     /// (`remove_proxy_from_requests` and `remove_proxy_from_initiator_requests`) handle edge cases
     /// gracefully to avoid unexpected behavior.
     fn remove_proxy(&mut self, proxy: &Proxy) {

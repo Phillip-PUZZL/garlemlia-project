@@ -5,11 +5,11 @@ use rand::prelude::IndexedRandom;
 use rsa::pkcs8::DecodePublicKey;
 use rsa::RsaPublicKey;
 use tokio::task::JoinHandle;
-use crate::garlic_cast::garlic_cast::alt_route_management::AltRouteManagement;
-use crate::garlic_cast::garlic_cast::clove_operations::CloveOperations;
-use crate::garlic_cast::garlic_cast::forwarding::Forwarding;
-use crate::garlic_cast::garlic_cast::proxy_management::ProxyManagement;
-use crate::garlic_cast::garlic_cast::utils::{send_error_neighbor1, send_error_neighbor2};
+use crate::garlic_cast::garlic::alt_route_management::AltRouteManagement;
+use crate::garlic_cast::garlic::clove_operations::CloveOperations;
+use crate::garlic_cast::garlic::forwarding::Forwarding;
+use crate::garlic_cast::garlic::proxy_management::ProxyManagement;
+use crate::garlic_cast::garlic::utils::{send_error_neighbor1, send_error_neighbor2};
 use crate::garlic_cast::request_info::{InitiatorRequest, Proxy};
 use crate::helper_functions::helper_functions::u256_random;
 use crate::structs::error::MessageError;
@@ -369,7 +369,7 @@ impl ProxyRequest for GarlicCast {
     ///
     /// - Ensure that the `cloves` vector contains valid elements, where each clove corresponds properly
     ///   to the neighbors (e.g., `cloves[0]` for `neighbor_1` and `cloves[1]` for `neighbor_2`).
-    /// - This function assumes that `send_error_neighbor1` and `send_error_neighbor2` are utility functions
+    /// - This function assumes that `send_error_neighbor1` and `send_error_neighbor2` are utility garlemlia
     ///   that simulate or check for errors in forwarding attempts.
     async fn handle_proxy_forwarding(&mut self, forward_type: u8, mut proxy: Proxy, cloves: Vec<Clove>) -> Option<Proxy> {
         let first_neighbor = proxy.neighbor_1.clone();

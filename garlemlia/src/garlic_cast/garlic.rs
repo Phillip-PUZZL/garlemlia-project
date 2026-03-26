@@ -139,7 +139,7 @@ impl SerializableGarlicCast {
 /// - Avoiding message loops and redundant forwarding with the `do_not_forward` mechanism.
 ///
 /// This struct is essential for coordinating decentralized network communication in protocols
-/// that rely on garlic routing or similar mechanisms.
+/// that rely on garlemlia routing or similar mechanisms.
 #[derive(Clone, Debug)]
 pub struct GarlicCast {
     socket: Arc<UdpSocket>,

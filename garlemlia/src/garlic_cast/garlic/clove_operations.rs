@@ -1,7 +1,7 @@
 use std::error::Error;
 use primitive_types::U256;
 use rsa::{RsaPrivateKey, RsaPublicKey};
-use crate::garlic_cast::garlic_cast::utils::{clove_to_message, encrypt_key, encrypt_message, generate_cloves, generate_encryption_key, generate_reed_solomon_shards, pad_message};
+use crate::garlic_cast::garlic::utils::{clove_to_message, encrypt_key, encrypt_message, generate_cloves, generate_encryption_key, generate_reed_solomon_shards, pad_message};
 use crate::helper_functions::helper_functions::u256_random;
 use crate::structs::constants::{DATA_SHARDS, DEFAULT_INDEX, MIN_PROXY_COUNT};
 use crate::structs::error::CloveMessageError;

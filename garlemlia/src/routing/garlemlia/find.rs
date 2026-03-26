@@ -2,7 +2,7 @@ use super::{Garlemlia, GarlemliaFunctions};
 use std::sync::Arc;
 use primitive_types::U256;
 use tokio::net::UdpSocket;
-use crate::garlemlia::garlemlia::functions::GarlemliaContext;
+use crate::routing::garlemlia::functions::GarlemliaContext;
 use crate::structs::garlemlia_message::{GarlemliaFindRequest, GarlemliaResponse};
 use crate::structs::node::Node;
 
