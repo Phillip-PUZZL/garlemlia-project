@@ -1,0 +1,166 @@
+use crate::core::u256_random;
+use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
+use hmac::{Hmac, Mac};
+use primitive_types::U256;
+use rsa::sha2::Sha256;
+use serde::{Deserialize, Serialize};
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Struct containing a hash location and the time with which it is associated
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct HashLocation {
+    pub time: DateTime<Utc>,
+    pub id: U256,
+}
+
+/// Struct containing the seed for a rotating hash, how often it rotates, and when it was stored
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RotatingHash {
+    seed: U256,
+    rotation_time_hours: f64,
+    stored_on: Option<DateTime<Utc>>,
+}
+
+impl RotatingHash {
+    pub fn new(rotation_time_hours: f64) -> RotatingHash {
+        RotatingHash {
+            seed: u256_random(),
+            rotation_time_hours,
+            stored_on: None,
+        }
+    }
+
+    pub fn get_seed(&self) -> U256 {
+        self.seed
+    }
+
+    pub fn get_stored_on(&self) -> Option<DateTime<Utc>> {
+        self.stored_on
+    }
+
+    pub fn store(&mut self) {
+        let now = Utc::now();
+        self.stored_on = Some(
+            Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour(), 0, 0)
+                .unwrap(),
+        );
+    }
+
+    /// Get the current value of the hash based on its seed
+    pub fn get_current(&self) -> Option<HashLocation> {
+        match self.stored_on {
+            Some(stored_time) => {
+                let now = Utc::now();
+                let time_id = RotatingHash::compute_rotating_id(
+                    self.seed,
+                    stored_time,
+                    self.rotation_time_hours,
+                    now,
+                );
+
+                match time_id {
+                    Some(time_id) => Some(HashLocation {
+                        time: now,
+                        id: time_id,
+                    }),
+                    None => None,
+                }
+            }
+            None => None,
+        }
+    }
+
+    /// Get next <count> IDs for the hash
+    pub fn get_next(&self, count: u8, interval: f64) -> Option<Vec<HashLocation>> {
+        match self.stored_on {
+            Some(stored_time) => {
+                let mut value_vec = vec![];
+                let now = Utc::now();
+
+                for i in 0..count {
+                    let next_interval = (interval * i as f64 * 3600.0).round() as i64;
+                    let start_time = Utc
+                        .with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour(), 0, 0)
+                        .unwrap();
+                    let analysis_time =
+                        DateTime::from_timestamp(start_time.timestamp() + next_interval, 0)
+                            .unwrap();
+                    //let analysis_time = Utc.with_ymd_and_hms(now.year(), now.month(), now.day(), now.hour() + i as u32, 0, 0).unwrap();
+                    let time_id = RotatingHash::compute_rotating_id(
+                        self.seed,
+                        stored_time,
+                        self.rotation_time_hours,
+                        analysis_time,
+                    );
+
+                    match time_id {
+                        Some(time_id) => {
+                            value_vec.push(HashLocation {
+                                time: analysis_time,
+                                id: time_id,
+                            });
+                        }
+                        None => {
+                            return None;
+                        }
+                    }
+                }
+
+                Some(value_vec)
+            }
+            None => None,
+        }
+    }
+
+    /// Get amount of time before next rotation
+    pub fn next_rotation(&self) -> Option<f64> {
+        match self.stored_on {
+            Some(stored_time) => {
+                let rotation_secs = (self.rotation_time_hours * 3600.0) as i64;
+
+                let next_rotation_time = stored_time + Duration::seconds(rotation_secs);
+
+                let secs_remaining = next_rotation_time.timestamp() - Utc::now().timestamp();
+
+                Some(secs_remaining as f64 / 3600.0)
+            }
+            None => None,
+        }
+    }
+
+    /// Compute the actual ID of the hash based on its seed
+    pub fn compute_rotating_id(
+        seed: U256,
+        stored_on: DateTime<Utc>,
+        rotation_hours: f64,
+        time: DateTime<Utc>,
+    ) -> Option<U256> {
+        let rotation_seconds = (rotation_hours * 3600.0).round() as i64;
+        let elapsed = time.timestamp() - stored_on.timestamp();
+
+        let periods_elapsed: i64;
+        if elapsed <= 0 {
+            periods_elapsed = 0;
+        } else {
+            periods_elapsed = elapsed / rotation_seconds;
+        };
+
+        let counter_bytes = periods_elapsed.to_be_bytes();
+
+        let mac = HmacSha256::new_from_slice(&seed.to_big_endian());
+
+        match mac {
+            Ok(mut mac) => {
+                mac.update(&counter_bytes);
+                let result = mac.finalize().into_bytes();
+
+                let mut id_bytes = [0u8; 32];
+                id_bytes.copy_from_slice(&result);
+
+                Some(U256::from_big_endian(&id_bytes))
+            }
+            Err(_) => None,
+        }
+    }
+}
