@@ -74,7 +74,7 @@ async fn split_chunk_into_pieces() {
     let test_output_folder = TEST_OUTPUT_FOLDER;
 
     let test_chunks_output_folder = format!("{}/{}", test_output_folder, CHUNKS_FOLDER);
-    let chunk_id = "00e4364ad9c049b48de35056b5e07d3f636b3ebe6ce69ba13b19c25dee7055e4";
+    let chunk_id = "0a3bc5d561324fcb213e63c107fdee6a6c9f37a956e5b4966c581e81a0d18cca";
 
     let mut chunk_file = File::open(format!("{}/{}", test_chunks_output_folder, chunk_id))
         .await
