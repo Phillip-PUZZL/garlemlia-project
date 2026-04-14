@@ -1,10 +1,11 @@
 [package]
-name = "garlemlia-project"
+name = "garlemlia_app"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 tokio = { version = "1.43.0", features = ["full"] }
 garlemlia = { path = "./garlemlia" }
+garlemlia_tui = { path = "./garlemlia_tui" }
 primitive-types = { version = "0.13.1", features = ["serde"] }
 serde_json = "1.0.140"
