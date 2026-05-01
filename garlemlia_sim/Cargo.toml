@@ -1,0 +1,11 @@
+[package]
+name = "garlemlia_sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+garlemlia = { path = "../garlemlia" }
+garlemlia_tui = { path = "../garlemlia_tui" }
+async-trait = "0.1.87"
+primitive-types = "0.13.1"
+tokio = "1.44.0"
